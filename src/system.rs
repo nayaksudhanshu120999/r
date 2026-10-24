@@ -19,14 +19,9 @@ mod win32 {
     use std::sync::mpsc::Sender;
     use std::sync::OnceLock;
     use std::thread;
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT,
-        WPARAM,
-    };
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows_sys::Win32::System::Threading::{
-        AttachThreadInput, CreateMutexW, GetCurrentThreadId,
-    };
+    use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, RegisterHotKey, SetFocus, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT,
         VK_LBUTTON, VK_MBUTTON, VK_RBUTTON, VK_SPACE,
@@ -73,28 +68,15 @@ mod win32 {
     }
 
     /// Ensures only one instance of cmdpal-rs runs at a time.
-    /// If another instance is already running, signals it to show the palette and returns `false`.
+    /// If an instance is already running, signals it to show the palette and returns `false`.
     pub fn ensure_single_instance() -> bool {
         unsafe {
             let class_wide = to_wide(TRAY_CLASS_NAME);
             let existing_hwnd = FindWindowW(class_wide.as_ptr(), null());
-
-            let mutex_name = to_wide("Local\\CmdPalRsSingleInstanceMutex");
-            let handle = CreateMutexW(null(), 1, mutex_name.as_ptr());
-
-            if handle != 0 && GetLastError() == ERROR_ALREADY_EXISTS {
-                if existing_hwnd != 0 {
-                    PostMessageW(existing_hwnd, WM_IPC_SHOW_PALETTE, 0, 0);
-                }
-                CloseHandle(handle);
+            if existing_hwnd != 0 {
+                PostMessageW(existing_hwnd, WM_IPC_SHOW_PALETTE, 0, 0);
                 return false;
             }
-
-            // If an older build (without the mutex) left a tray host window open, tell it to close
-            if existing_hwnd != 0 {
-                PostMessageW(existing_hwnd, WM_DESTROY, 0, 0);
-            }
-
             true
         }
     }
