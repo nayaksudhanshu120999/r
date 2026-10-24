@@ -14,7 +14,7 @@ mod win32 {
     use super::SystemEvent;
     use crate::icon::create_win32_tray_icon_buffers;
     use std::mem::zeroed;
-    use std::ptr::null;
+    use std::ptr::{null, null_mut};
     use std::sync::atomic::{AtomicIsize, Ordering};
     use std::sync::mpsc::Sender;
     use std::sync::OnceLock;
@@ -67,13 +67,11 @@ mod win32 {
         let _ = slint::invoke_from_event_loop(|| {});
     }
 
-    /// Ensures only one instance of cmdpal-rs runs at a time.
-    /// If an instance is already running, signals it to show the palette and returns `false`.
     pub fn ensure_single_instance() -> bool {
         unsafe {
             let class_wide = to_wide(TRAY_CLASS_NAME);
             let existing_hwnd = FindWindowW(class_wide.as_ptr(), null());
-            if existing_hwnd != 0 {
+            if !existing_hwnd.is_null() {
                 PostMessageW(existing_hwnd, WM_IPC_SHOW_PALETTE, 0, 0);
                 return false;
             }
@@ -82,10 +80,10 @@ mod win32 {
     }
 
     pub fn cleanup_tray_window() {
-        let hwnd = TRAY_HWND.load(Ordering::SeqCst);
-        if hwnd != 0 {
+        let hwnd_val = TRAY_HWND.load(Ordering::SeqCst);
+        if hwnd_val != 0 {
             unsafe {
-                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                PostMessageW(hwnd_val as HWND, WM_CLOSE, 0, 0);
             }
         }
     }
@@ -112,16 +110,16 @@ mod win32 {
                 0,
                 0,
                 0,
-                0,
-                0,
+                null_mut(),
+                null_mut(),
                 hinstance,
                 null(),
             );
 
-            if hwnd == 0 {
+            if hwnd.is_null() {
                 return;
             }
-            TRAY_HWND.store(hwnd, Ordering::SeqCst);
+            TRAY_HWND.store(hwnd as isize, Ordering::SeqCst);
 
             let _ = RegisterHotKey(
                 hwnd,
@@ -157,14 +155,14 @@ mod win32 {
             Shell_NotifyIconW(NIM_ADD, &nid);
 
             let mut msg: MSG = zeroed();
-            while GetMessageW(&mut msg, 0, 0, 0) > 0 {
+            while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
 
             Shell_NotifyIconW(NIM_DELETE, &nid);
             let _ = UnregisterHotKey(hwnd, HOTKEY_ID_CTRL_SPACE);
-            if hicon != 0 {
+            if !hicon.is_null() {
                 DestroyIcon(hicon);
             }
         });
@@ -210,7 +208,7 @@ mod win32 {
 
     unsafe fn show_tray_context_menu(hwnd: HWND) {
         let hmenu = CreatePopupMenu();
-        if hmenu == 0 {
+        if hmenu.is_null() {
             return;
         }
 
@@ -270,13 +268,13 @@ mod win32 {
     fn get_palette_hwnd(palette_title: &str) -> HWND {
         let cached = CACHED_PALETTE_HWND.load(Ordering::Relaxed);
         unsafe {
-            if cached != 0 && IsWindow(cached) != 0 {
-                return cached;
+            if cached != 0 && IsWindow(cached as HWND) != 0 {
+                return cached as HWND;
             }
         }
         let found = find_window_by_title(palette_title);
-        if found != 0 {
-            CACHED_PALETTE_HWND.store(found, Ordering::Relaxed);
+        if !found.is_null() {
+            CACHED_PALETTE_HWND.store(found as isize, Ordering::Relaxed);
         }
         found
     }
@@ -284,7 +282,7 @@ mod win32 {
     pub fn enable_maximize_and_resize(title: &str) {
         unsafe {
             let hwnd = find_window_by_title(title);
-            if hwnd == 0 {
+            if hwnd.is_null() {
                 return;
             }
             let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
@@ -292,7 +290,7 @@ mod win32 {
             SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
             SetWindowPos(
                 hwnd,
-                0,
+                null_mut(),
                 0,
                 0,
                 0,
@@ -305,12 +303,12 @@ mod win32 {
     pub fn force_activate_window(title: &str) {
         unsafe {
             let hwnd = find_window_by_title(title);
-            if hwnd == 0 {
+            if hwnd.is_null() {
                 return;
             }
             let fg_hwnd = GetForegroundWindow();
             let current_thread = GetCurrentThreadId();
-            let fg_thread = GetWindowThreadProcessId(fg_hwnd, std::ptr::null_mut());
+            let fg_thread = GetWindowThreadProcessId(fg_hwnd, null_mut());
 
             if fg_thread != 0 && fg_thread != current_thread {
                 AttachThreadInput(fg_thread, current_thread, 1);
@@ -338,7 +336,7 @@ mod win32 {
     pub fn should_auto_hide_palette(palette_title: &str, check_focus: bool) -> bool {
         unsafe {
             let hwnd = get_palette_hwnd(palette_title);
-            if hwnd == 0 {
+            if hwnd.is_null() {
                 return false;
             }
 
@@ -362,7 +360,7 @@ mod win32 {
 
             if check_focus {
                 let fg = GetForegroundWindow();
-                if fg != 0 && fg != hwnd {
+                if !fg.is_null() && fg != hwnd {
                     return true;
                 }
             }
