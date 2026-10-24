@@ -1,9 +1,10 @@
 use crate::config::AppConfig;
-use crate::models::{AppEntry, CandidateItem, ExecutionTarget, ShelfCategory};
+use crate::models::{AppEntry, CandidateItem, ExecutionTarget, ScannedFileEntry, ShelfCategory};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 
-const MAX_APP_RESULTS: usize = 16;
+const MAX_APP_RESULTS: usize = 14;
+const MAX_FILE_RESULTS: usize = 12;
 
 struct StaticCommandSpec {
     title: &'static str,
@@ -17,12 +18,17 @@ struct StaticCommandSpec {
 }
 
 const PRIORITY_SPECS: &[StaticCommandSpec] = &[
-    // Built-in Command Palette Settings
     StaticCommandSpec {
         title: "Command Palette Settings",
         badge: "SETTINGS",
         category: ShelfCategory::Settings,
-        triggers: &["palette settings", "preferences", "configure palette", "cmdpal settings"],
+        triggers: &[
+            "palette settings",
+            "preferences",
+            "configure palette",
+            "cmdpal settings",
+            "theme",
+        ],
         program: "",
         args: &[],
         settings_uri: None,
@@ -195,14 +201,20 @@ const PRIORITY_SPECS: &[StaticCommandSpec] = &[
 pub struct QueryEngine {
     pub config: AppConfig,
     pub apps: Vec<AppEntry>,
+    pub custom_files: Vec<ScannedFileEntry>,
     matcher: SkimMatcherV2,
 }
 
 impl QueryEngine {
-    pub fn new(config: AppConfig, apps: Vec<AppEntry>) -> Self {
+    pub fn new(
+        config: AppConfig,
+        apps: Vec<AppEntry>,
+        custom_files: Vec<ScannedFileEntry>,
+    ) -> Self {
         Self {
             config,
             apps,
+            custom_files,
             matcher: SkimMatcherV2::default(),
         }
     }
@@ -215,11 +227,10 @@ impl QueryEngine {
 
         let normalized = trimmed.to_ascii_lowercase();
 
-        // Collect candidates per category
-        let mut cmds_list = self.match_commands_and_settings(&normalized, trimmed, ShelfCategory::Cmds);
-        let mut settings_list =
-            self.match_commands_and_settings(&normalized, trimmed, ShelfCategory::Settings);
+        let mut cmds_list = self.match_commands(&normalized, trimmed);
+        let mut settings_list = self.match_settings(&normalized, trimmed);
         let mut apps_list = self.match_apps(trimmed);
+        let mut files_list = self.match_custom_files(trimmed);
         let mut bang_list = Vec::new();
 
         if let Some(bang_item) = self.match_prefix_free_bang(trimmed) {
@@ -230,11 +241,11 @@ impl QueryEngine {
         settings_list.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
         apps_list.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
         apps_list.truncate(MAX_APP_RESULTS);
+        files_list.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
+        files_list.truncate(MAX_FILE_RESULTS);
 
-        // Assemble categorized results in the user's configured Order of Preference
         let mut ordered_results = Vec::new();
 
-        // If the user explicitly typed a bang prefix + query, put the bang match first
         let has_explicit_bang = !bang_list.is_empty();
         if has_explicit_bang {
             ordered_results.extend(bang_list.drain(..));
@@ -245,6 +256,7 @@ impl QueryEngine {
                 ShelfCategory::Cmds => ordered_results.append(&mut cmds_list),
                 ShelfCategory::Settings => ordered_results.append(&mut settings_list),
                 ShelfCategory::Apps => ordered_results.append(&mut apps_list),
+                ShelfCategory::Files => ordered_results.append(&mut files_list),
                 ShelfCategory::Web => {
                     if !has_explicit_bang {
                         ordered_results.append(&mut bang_list);
@@ -253,7 +265,6 @@ impl QueryEngine {
             }
         }
 
-        // Fallback or trailing Web Search option when no explicit bang was triggered
         if !has_explicit_bang {
             let encoded = urlencoding::encode(trimmed);
             let google_url = format!("https://www.google.com/search?q={}", encoded);
@@ -292,89 +303,129 @@ impl QueryEngine {
             .collect()
     }
 
-    fn match_commands_and_settings(
-        &self,
-        normalized_query: &str,
-        raw_query: &str,
-        target_category: ShelfCategory,
-    ) -> Vec<CandidateItem> {
+    fn match_custom_files(&self, trimmed: &str) -> Vec<CandidateItem> {
+        self.custom_files
+            .iter()
+            .filter_map(|file| {
+                let score = self.matcher.fuzzy_match(&file.display_name, trimmed)?;
+                Some(CandidateItem {
+                    title: file.display_name.clone(),
+                    badge: "FILE",
+                    category: ShelfCategory::Files,
+                    can_elevate: false,
+                    score,
+                    target: ExecutionTarget::FilePath(file.path.clone()),
+                })
+            })
+            .collect()
+    }
+
+    fn match_commands(&self, normalized_query: &str, raw_query: &str) -> Vec<CandidateItem> {
         let mut results = Vec::new();
 
-        // 1. Built-in static specs
-        for spec in PRIORITY_SPECS.iter().filter(|s| s.category == target_category) {
-            if let Some(score) = self.score_triggers_and_title(normalized_query, raw_query, spec.title, spec.triggers) {
+        // 1. Built-in commands
+        for spec in PRIORITY_SPECS
+            .iter()
+            .filter(|s| s.category == ShelfCategory::Cmds)
+        {
+            if let Some(score) =
+                self.score_triggers_and_title(normalized_query, raw_query, spec.title, spec.triggers)
+            {
+                let program = if spec.program.eq_ignore_ascii_case("cmd.exe")
+                    || spec.program.eq_ignore_ascii_case("cmd")
+                {
+                    self.config.custom_cmd_path.clone()
+                } else {
+                    spec.program.to_string()
+                };
+
+                results.push(CandidateItem {
+                    title: spec.title.to_string(),
+                    badge: spec.badge,
+                    category: ShelfCategory::Cmds,
+                    can_elevate: true,
+                    score,
+                    target: ExecutionTarget::SystemProcess {
+                        program,
+                        args: spec.args.iter().map(|s| (*s).to_string()).collect(),
+                    },
+                });
+            }
+        }
+
+        // 2. Simplified user-defined Custom Commands
+        for custom in &self.config.custom_commands {
+            let trigger_slice = [custom.name.as_str()];
+            if let Some(score) = self.score_triggers_and_title(
+                normalized_query,
+                raw_query,
+                &custom.name,
+                &trigger_slice,
+            ) {
+                results.push(CandidateItem {
+                    title: custom.name.clone(),
+                    badge: "COMMAND",
+                    category: ShelfCategory::Cmds,
+                    can_elevate: true,
+                    score,
+                    target: ExecutionTarget::CustomCommand(custom.command.clone()),
+                });
+            }
+        }
+
+        results
+    }
+
+    fn match_settings(&self, normalized_query: &str, raw_query: &str) -> Vec<CandidateItem> {
+        let mut results = Vec::new();
+
+        // 1. Built-in settings
+        for spec in PRIORITY_SPECS
+            .iter()
+            .filter(|s| s.category == ShelfCategory::Settings)
+        {
+            if let Some(score) =
+                self.score_triggers_and_title(normalized_query, raw_query, spec.title, spec.triggers)
+            {
                 let target = if spec.is_palette_settings {
                     ExecutionTarget::OpenPaletteSettings
-                } else if let Some(uri) = spec.settings_uri {
+                } else {
+                    let uri = spec.settings_uri.unwrap_or("ms-settings:");
                     let resolved_uri = if uri == "ms-settings:" {
                         self.config.custom_system_settings_path.clone()
                     } else {
                         uri.to_string()
                     };
                     ExecutionTarget::SettingsUri(resolved_uri)
-                } else {
-                    let program = if spec.program.eq_ignore_ascii_case("cmd.exe")
-                        || spec.program.eq_ignore_ascii_case("cmd")
-                    {
-                        self.config.custom_cmd_path.clone()
-                    } else {
-                        spec.program.to_string()
-                    };
-                    ExecutionTarget::SystemProcess {
-                        program,
-                        args: spec.args.iter().map(|s| (*s).to_string()).collect(),
-                    }
                 };
 
                 results.push(CandidateItem {
                     title: spec.title.to_string(),
                     badge: spec.badge,
-                    category: spec.category,
-                    can_elevate: spec.category == ShelfCategory::Cmds && !spec.is_palette_settings,
+                    category: ShelfCategory::Settings,
+                    can_elevate: false,
                     score,
                     target,
                 });
             }
         }
 
-        // 2. User-configured custom commands and custom system settings
-        for custom in &self.config.custom_entries {
-            let cat = ShelfCategory::from_label(&custom.category);
-            if cat != target_category {
-                continue;
-            }
-
-            let trigger_refs: Vec<&str> = custom.triggers.iter().map(|s| s.as_str()).collect();
-            if let Some(score) =
-                self.score_triggers_and_title(normalized_query, raw_query, &custom.title, &trigger_refs)
-            {
-                let target = if cat == ShelfCategory::Settings {
-                    ExecutionTarget::SettingsUri(custom.target_path.clone())
-                } else {
-                    let program = if custom.target_path.eq_ignore_ascii_case("cmd.exe")
-                        || custom.target_path.eq_ignore_ascii_case("cmd")
-                    {
-                        self.config.custom_cmd_path.clone()
-                    } else {
-                        custom.target_path.clone()
-                    };
-                    ExecutionTarget::SystemProcess {
-                        program,
-                        args: custom.args.clone(),
-                    }
-                };
-
+        // 2. Simplified user-defined Custom Settings
+        for custom in &self.config.custom_settings {
+            let trigger_slice = [custom.name.as_str()];
+            if let Some(score) = self.score_triggers_and_title(
+                normalized_query,
+                raw_query,
+                &custom.name,
+                &trigger_slice,
+            ) {
                 results.push(CandidateItem {
-                    title: custom.title.clone(),
-                    badge: if cat == ShelfCategory::Settings {
-                        "SETTING"
-                    } else {
-                        "COMMAND"
-                    },
-                    category: cat,
-                    can_elevate: cat == ShelfCategory::Cmds,
+                    title: custom.name.clone(),
+                    badge: "SETTING",
+                    category: ShelfCategory::Settings,
+                    can_elevate: false,
                     score,
-                    target,
+                    target: ExecutionTarget::SettingsUri(custom.path.clone()),
                 });
             }
         }
@@ -433,7 +484,11 @@ impl QueryEngine {
         let target_url = url_template.replace("{q}", &encoded_payload);
 
         Some(CandidateItem {
-            title: format!("[{}] Search: {}", lookup_key.to_ascii_uppercase(), search_payload),
+            title: format!(
+                "[{}] Search: {}",
+                lookup_key.to_ascii_uppercase(),
+                search_payload
+            ),
             badge: "BANG",
             category: ShelfCategory::Web,
             can_elevate: false,

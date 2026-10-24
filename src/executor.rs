@@ -6,16 +6,70 @@ use std::process::Command;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-pub fn execute_candidate(item: &CandidateItem, run_as_admin: bool) -> io::Result<()> {
+pub fn execute_candidate(
+    item: &CandidateItem,
+    run_as_admin: bool,
+    custom_cmd_path: &str,
+) -> io::Result<()> {
     match &item.target {
         ExecutionTarget::SystemProcess { program, args } => {
             spawn_system_process(program, args, run_as_admin)
         }
+        ExecutionTarget::CustomCommand(cmd_line) => {
+            spawn_custom_command(cmd_line, run_as_admin, custom_cmd_path)
+        }
         ExecutionTarget::SettingsUri(uri_or_path) => spawn_settings_target(uri_or_path),
         ExecutionTarget::WebUrl(url) => spawn_shell_url(url),
-        ExecutionTarget::AppPath(path) => spawn_app_path(path, run_as_admin),
+        ExecutionTarget::AppPath(path) | ExecutionTarget::FilePath(path) => {
+            spawn_file_or_app_path(path, run_as_admin)
+        }
         ExecutionTarget::OpenPaletteSettings => Ok(()),
     }
+}
+
+fn spawn_custom_command(
+    cmd_line: &str,
+    run_as_admin: bool,
+    custom_cmd_path: &str,
+) -> io::Result<()> {
+    let trimmed = cmd_line.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    let shell = if custom_cmd_path.trim().is_empty() {
+        "cmd.exe"
+    } else {
+        custom_cmd_path.trim()
+    };
+
+    // If the user gave an existing file path directly, open or run it
+    if Path::new(trimmed).exists() {
+        return spawn_file_or_app_path(Path::new(trimmed), run_as_admin);
+    }
+
+    if run_as_admin {
+        let ps_command = format!(
+            "Start-Process -FilePath '{}' -ArgumentList '/C {}' -Verb RunAs",
+            escape_ps_single_quoted(shell),
+            escape_ps_single_quoted(trimmed)
+        );
+        Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &ps_command,
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
+    } else {
+        Command::new(shell).args(["/C", trimmed]).spawn()?;
+    }
+
+    Ok(())
 }
 
 fn spawn_system_process(program: &str, args: &[String], run_as_admin: bool) -> io::Result<()> {
@@ -52,7 +106,6 @@ fn spawn_system_process(program: &str, args: &[String], run_as_admin: bool) -> i
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()?;
     } else {
-        // Interactive console shells (cmd, powershell, wt, taskmgr, control) should show their window
         let lower = trimmed_prog.to_ascii_lowercase();
         let is_interactive = lower.contains("cmd")
             || lower.contains("powershell")
@@ -82,7 +135,10 @@ fn spawn_settings_target(uri_or_path: &str) -> io::Result<()> {
             .arg(trimmed)
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()?;
-    } else if Path::new(trimmed).exists() || trimmed.ends_with(".cpl") || trimmed.ends_with(".msc") {
+    } else if Path::new(trimmed).exists()
+        || trimmed.ends_with(".cpl")
+        || trimmed.ends_with(".msc")
+    {
         Command::new("cmd.exe")
             .args(["/C", "start", "", trimmed])
             .creation_flags(CREATE_NO_WINDOW)
@@ -104,7 +160,7 @@ fn spawn_shell_url(url: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn spawn_app_path(path: &Path, run_as_admin: bool) -> io::Result<()> {
+fn spawn_file_or_app_path(path: &Path, run_as_admin: bool) -> io::Result<()> {
     let path_str = path.to_string_lossy();
 
     if run_as_admin {

@@ -5,6 +5,7 @@ pub enum ShelfCategory {
     Cmds,
     Settings,
     Apps,
+    Files,
     Web,
 }
 
@@ -14,6 +15,7 @@ impl ShelfCategory {
             "cmds" | "cmd" | "commands" | "command" => Self::Cmds,
             "settings" | "setting" => Self::Settings,
             "apps" | "app" | "applications" => Self::Apps,
+            "files" | "file" => Self::Files,
             "web" | "bang" | "search" => Self::Web,
             _ => Self::Apps,
         }
@@ -24,6 +26,7 @@ impl ShelfCategory {
             Self::Cmds => "Cmds",
             Self::Settings => "Settings",
             Self::Apps => "Apps",
+            Self::Files => "Files",
             Self::Web => "Web",
         }
     }
@@ -33,6 +36,7 @@ impl ShelfCategory {
             Self::Cmds => "SYSTEM COMMANDS",
             Self::Settings => "SYSTEM SETTINGS",
             Self::Apps => "APPLICATIONS",
+            Self::Files => "CUSTOM FILES",
             Self::Web => "WEB SEARCH",
         }
     }
@@ -42,15 +46,17 @@ impl ShelfCategory {
             Self::Cmds => "System Commands",
             Self::Settings => "System Settings",
             Self::Apps => "Installed Applications",
+            Self::Files => "Custom Scanned Files",
             Self::Web => "Web Search & Bangs",
         }
     }
 
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Cmds => "Power actions, terminal commands, and custom scripts",
+            Self::Cmds => "Built-in power actions, terminal commands, and custom commands",
             Self::Settings => "Windows ms-settings URIs, Control Panel, and custom settings",
-            Self::Apps => "Start Menu shortcuts and custom application folders",
+            Self::Apps => "Start Menu applications enabled in the Installed Apps tab",
+            Self::Files => "Files indexed exclusively from your Custom File Scan paths",
             Self::Web => "Prefix-free bang shortcuts and fallback web search",
         }
     }
@@ -60,6 +66,7 @@ impl ShelfCategory {
             Self::Cmds => "⚡",
             Self::Settings => "⚙",
             Self::Apps => "❖",
+            Self::Files => "📄",
             Self::Web => "🌐",
         }
     }
@@ -72,12 +79,16 @@ pub enum ExecutionTarget {
         program: String,
         args: Vec<String>,
     },
+    /// Executes a user-defined custom command string or executable path
+    CustomCommand(String),
     /// Opens a Windows ms-settings URI or custom setting path/applet
     SettingsUri(String),
     /// Opens an HTTP/HTTPS URL in the system default browser
     WebUrl(String),
     /// Launches a local application shortcut (.lnk) or executable (.exe)
     AppPath(PathBuf),
+    /// Opens a file from a custom scan path using the default system handler
+    FilePath(PathBuf),
     /// Opens the built-in Command Palette Settings GUI
     OpenPaletteSettings,
 }
@@ -95,5 +106,11 @@ pub struct CandidateItem {
 #[derive(Debug, Clone)]
 pub struct AppEntry {
     pub name: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScannedFileEntry {
+    pub display_name: String,
     pub path: PathBuf,
 }

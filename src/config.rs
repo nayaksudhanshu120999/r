@@ -5,12 +5,14 @@ use std::fs;
 use std::path::Path;
 
 const DEFAULT_CONFIG_TOML: &str = r#"show_apps = true
+theme = "midnight-indigo"
 custom_cmd_path = "cmd.exe"
 custom_system_settings_path = "ms-settings:"
-category_order = ["Cmds", "Settings", "Apps", "Web"]
+category_order = ["Cmds", "Settings", "Apps", "Files", "Web"]
 hidden_apps = []
-custom_app_dirs = []
-custom_entries = []
+custom_file_scan_paths = []
+custom_commands = []
+custom_settings = []
 
 [bangs]
 yt = "https://www.youtube.com/results?search_query={q}"
@@ -29,6 +31,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_theme() -> String {
+    "midnight-indigo".to_string()
+}
+
 fn default_cmd_path() -> String {
     "cmd.exe".to_string()
 }
@@ -42,25 +48,29 @@ fn default_category_order() -> Vec<String> {
         "Cmds".to_string(),
         "Settings".to_string(),
         "Apps".to_string(),
+        "Files".to_string(),
         "Web".to_string(),
     ]
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CustomEntryConfig {
-    pub title: String,
-    pub category: String, // "Cmds" or "Settings"
-    #[serde(default)]
-    pub triggers: Vec<String>,
-    pub target_path: String,
-    #[serde(default)]
-    pub args: Vec<String>,
+pub struct CustomCommandItem {
+    pub name: String,
+    pub command: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CustomSettingItem {
+    pub name: String,
+    pub path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     #[serde(default = "default_true")]
     pub show_apps: bool,
+    #[serde(default = "default_theme")]
+    pub theme: String,
     #[serde(default = "default_cmd_path")]
     pub custom_cmd_path: String,
     #[serde(default = "default_settings_path")]
@@ -70,9 +80,11 @@ pub struct AppConfig {
     #[serde(default)]
     pub hidden_apps: Vec<String>,
     #[serde(default)]
-    pub custom_app_dirs: Vec<String>,
+    pub custom_file_scan_paths: Vec<String>,
     #[serde(default)]
-    pub custom_entries: Vec<CustomEntryConfig>,
+    pub custom_commands: Vec<CustomCommandItem>,
+    #[serde(default)]
+    pub custom_settings: Vec<CustomSettingItem>,
     #[serde(default)]
     pub bangs: HashMap<String, String>,
 }
@@ -81,12 +93,14 @@ impl Default for AppConfig {
     fn default() -> Self {
         toml::from_str(DEFAULT_CONFIG_TOML).unwrap_or(Self {
             show_apps: true,
+            theme: default_theme(),
             custom_cmd_path: default_cmd_path(),
             custom_system_settings_path: default_settings_path(),
             category_order: default_category_order(),
             hidden_apps: Vec::new(),
-            custom_app_dirs: Vec::new(),
-            custom_entries: Vec::new(),
+            custom_file_scan_paths: Vec::new(),
+            custom_commands: Vec::new(),
+            custom_settings: Vec::new(),
             bangs: HashMap::new(),
         })
     }
@@ -100,8 +114,8 @@ impl AppConfig {
             let _ = fs::write(path_ref, DEFAULT_CONFIG_TOML);
         }
 
-        let raw_content = fs::read_to_string(path_ref)
-            .unwrap_or_else(|_| DEFAULT_CONFIG_TOML.to_string());
+        let raw_content =
+            fs::read_to_string(path_ref).unwrap_or_else(|_| DEFAULT_CONFIG_TOML.to_string());
 
         let mut parsed: AppConfig = toml::from_str(&raw_content).unwrap_or_default();
         parsed.normalize();
@@ -123,6 +137,12 @@ impl AppConfig {
             .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
             .collect();
 
+        if self.theme.trim().is_empty() {
+            self.theme = default_theme();
+        } else {
+            self.theme = self.theme.trim().to_ascii_lowercase();
+        }
+
         if self.custom_cmd_path.trim().is_empty() {
             self.custom_cmd_path = default_cmd_path();
         } else {
@@ -135,15 +155,15 @@ impl AppConfig {
             self.custom_system_settings_path = self.custom_system_settings_path.trim().to_string();
         }
 
-        // Ensure all 4 categories exist exactly once in preference order
-        let mut ordered = Vec::with_capacity(4);
+        // Ensure all 5 categories exist in order of preference
+        let mut ordered = Vec::with_capacity(5);
         for item in &self.category_order {
             let cat = ShelfCategory::from_label(item).as_str().to_string();
             if !ordered.contains(&cat) {
                 ordered.push(cat);
             }
         }
-        for fallback in ["Cmds", "Settings", "Apps", "Web"] {
+        for fallback in ["Cmds", "Settings", "Apps", "Files", "Web"] {
             let s = fallback.to_string();
             if !ordered.contains(&s) {
                 ordered.push(s);
@@ -164,6 +184,20 @@ impl AppConfig {
             }
         }
         self.hidden_apps = clean_hidden;
+
+        // Deduplicate custom_file_scan_paths
+        let mut clean_paths = Vec::new();
+        for p in &self.custom_file_scan_paths {
+            let trimmed = p.trim();
+            if !trimmed.is_empty()
+                && !clean_paths
+                    .iter()
+                    .any(|existing: &String| existing.eq_ignore_ascii_case(trimmed))
+            {
+                clean_paths.push(trimmed.to_string());
+            }
+        }
+        self.custom_file_scan_paths = clean_paths;
     }
 
     pub fn ordered_categories(&self) -> Vec<ShelfCategory> {
@@ -177,5 +211,15 @@ impl AppConfig {
         self.hidden_apps
             .iter()
             .any(|h| h.eq_ignore_ascii_case(app_name.trim()))
+    }
+
+    pub fn set_app_visibility(&mut self, app_name: &str, visible: bool) {
+        let trimmed = app_name.trim();
+        if visible {
+            self.hidden_apps
+                .retain(|h| !h.eq_ignore_ascii_case(trimmed));
+        } else if !self.is_app_hidden(trimmed) {
+            self.hidden_apps.push(trimmed.to_string());
+        }
     }
 }

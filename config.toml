@@ -1,10 +1,12 @@
 show_apps = true
+theme = "midnight-indigo"
 custom_cmd_path = "cmd.exe"
 custom_system_settings_path = "ms-settings:"
-category_order = ["Cmds", "Settings", "Apps", "Web"]
+category_order = ["Cmds", "Settings", "Apps", "Files", "Web"]
 hidden_apps = []
-custom_app_dirs = []
-custom_entries = []
+custom_file_scan_paths = []
+custom_commands = []
+custom_settings = []
 
 [bangs]
 yt = "https://www.youtube.com/results?search_query={q}"
