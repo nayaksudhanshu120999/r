@@ -1,3 +1,11 @@
+show_apps = true
+custom_cmd_path = "cmd.exe"
+custom_system_settings_path = "ms-settings:"
+category_order = ["Cmds", "Settings", "Apps", "Web"]
+hidden_apps = []
+custom_app_dirs = []
+custom_entries = []
+
 [bangs]
 yt = "https://www.youtube.com/results?search_query={q}"
 g = "https://www.google.com/search?q={q}"

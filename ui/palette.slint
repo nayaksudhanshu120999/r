@@ -1,86 +1,126 @@
-import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 
 export struct UIResultItem {
     title: string,
-    subtitle: string,
     badge: string,
     category: string,
+    category-header: string,
+    icon-text: string,
     can-elevate: bool,
+    is-app: bool,
+    is-first-in-category: bool,
+}
+
+export struct UICategoryOrderItem {
+    id: string,
+    label: string,
+    description: string,
+}
+
+export struct UICustomEntry {
+    title: string,
+    category: string,
+    triggers: string,
+    target-path: string,
+    args: string,
+}
+
+export struct UIBangEntry {
+    key: string,
+    url: string,
 }
 
 export component PaletteWindow inherits Window {
     title: "Command Palette";
     no-frame: true;
     always-on-top: true;
-    background: #18181b;
+    background: transparent;
     width: 680px;
+    height: root.dynamic-height;
+    icon: root.app-icon;
 
+    in property <image> app-icon;
     in-out property <string> query-text: "";
-    in-out property <string> active-shelf: "All";
     in-out property <[UIResultItem]> results: [];
     in-out property <int> selected-index: 0;
+    in-out property <length> dynamic-height: 68px;
 
     in-out property <bool> context-menu-visible: false;
     in-out property <int> context-menu-index: -1;
+    in-out property <length> context-menu-x: 0px;
     in-out property <length> context-menu-y: 0px;
-
-    // Responsive visibility check for Compact Mode:
-    // Shrinks window down to just the text box when input is empty or yields zero matches.
-    out property <bool> is-compact: root.query-text == "" || root.results.length == 0;
-
-    height: root.is-compact ? 64px : 436px;
+    in-out property <bool> context-menu-can-elevate: false;
+    in-out property <bool> context-menu-is-app: false;
 
     callback query-changed(string);
-    callback shelf-selected(string);
     callback activate-item(int);
     callback run-item-admin(int);
+    callback hide-app-item(int);
+    callback open-settings();
     callback escape-pressed();
 
-    forward-focus: search-input;
+    public function focus-input() {
+        search-input.focus();
+    }
 
     Rectangle {
         width: 100%;
         height: 100%;
-        background: #18181b;
+        background: #11131a;
+        border-radius: 14px;
         border-width: 1px;
-        border-color: #2e2e36;
-        border-radius: 10px;
+        border-color: #2a2f42;
         clip: true;
 
         VerticalLayout {
             padding: 10px;
             spacing: 8px;
 
-            // Primary Text Input Box
+            // Top Search Bar
             Rectangle {
-                height: 44px;
-                background: #222228;
-                border-radius: 8px;
+                height: 48px;
+                background: #181b26;
+                border-radius: 10px;
                 border-width: 1px;
-                border-color: search-input.has-focus ? #6366f1 : #34343e;
+                border-color: search-input.has-focus ? #6366f1 : #262b3d;
 
                 HorizontalLayout {
-                    padding-left: 14px;
-                    padding-right: 14px;
-                    spacing: 10px;
+                    padding-left: 12px;
+                    padding-right: 10px;
+                    spacing: 12px;
+                    alignment: stretch;
 
-                    Text {
-                        text: "⌕";
-                        color: #8b8b99;
-                        font-size: 18px;
-                        vertical-alignment: center;
+                    // App Icon
+                    VerticalLayout {
+                        alignment: center;
+                        width: 26px;
+                        Image {
+                            source: root.app-icon;
+                            width: 24px;
+                            height: 24px;
+                        }
                     }
 
+                    // Search Input Box
                     Rectangle {
                         horizontal-stretch: 1;
                         clip: true;
+
+                        if root.query-text == "" : Text {
+                            x: 0px;
+                            text: "Type a command, setting, app, or web search...";
+                            color: #6b728e;
+                            font-size: 15px;
+                            vertical-alignment: center;
+                            height: 100%;
+                        }
 
                         search-input := TextInput {
                             width: 100%;
                             height: 100%;
                             text <=> root.query-text;
-                            font-size: 16px;
-                            color: #f4f4f6;
+                            color: #f3f4f8;
+                            font-size: 15px;
                             vertical-alignment: center;
                             single-line: true;
 
@@ -89,27 +129,24 @@ export component PaletteWindow inherits Window {
                                 root.query-changed(self.text);
                             }
 
-                            key-pressed(event) => {
-                                if (event.text == Key.UpArrow) {
-                                    root.context-menu-visible = false;
-                                    if (root.selected-index > 0) {
-                                        root.selected-index -= 1;
-                                    }
-                                    return accept;
+                            accepted => {
+                                if root.results.length > 0 && root.selected-index >= 0 {
+                                    root.activate-item(root.selected-index);
                                 }
+                            }
+
+                            key-pressed(event) => {
                                 if (event.text == Key.DownArrow) {
                                     root.context-menu-visible = false;
-                                    if (root.selected-index + 1 < root.results.length) {
-                                        root.selected-index += 1;
+                                    if (root.results.length > 0) {
+                                        root.selected-index = Math.min(root.selected-index + 1, root.results.length - 1);
                                     }
                                     return accept;
                                 }
-                                if (event.text == Key.Return) {
-                                    if (root.context-menu-visible && root.context-menu-index >= 0) {
-                                        root.context-menu-visible = false;
-                                        root.run-item-admin(root.context-menu-index);
-                                    } else if (root.results.length > 0 && root.selected-index >= 0) {
-                                        root.activate-item(root.selected-index);
+                                if (event.text == Key.UpArrow) {
+                                    root.context-menu-visible = false;
+                                    if (root.results.length > 0) {
+                                        root.selected-index = Math.max(root.selected-index - 1, 0);
                                     }
                                     return accept;
                                 }
@@ -124,171 +161,1107 @@ export component PaletteWindow inherits Window {
                                 return reject;
                             }
                         }
+                    }
 
-                        if root.query-text == "" : Text {
-                            text: "Type a command, setting, bang shortcut (e.g. yt rust), or app name...";
-                            color: #686875;
-                            font-size: 14px;
-                            vertical-alignment: center;
+                    // Shortcut Pill
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            height: 24px;
+                            width: 78px;
+                            border-radius: 6px;
+                            background: #202434;
+                            border-width: 1px;
+                            border-color: #2e344b;
+
+                            Text {
+                                text: "Ctrl+Space";
+                                color: #8b93b0;
+                                font-size: 10px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
                     }
 
-                    if root.active-shelf != "All" : Rectangle {
-                        width: 68px;
-                        height: 24px;
-                        background: #312e81;
-                        border-radius: 4px;
-                        y: 10px;
+                    // Settings Button
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 32px;
+                            height: 30px;
+                            border-radius: 7px;
+                            background: settings-touch.has-hover ? #2b3147 : #202434;
+                            border-width: 1px;
+                            border-color: settings-touch.has-hover ? #6366f1 : #2e344b;
 
-                        Text {
-                            text: root.active-shelf;
-                            color: #e0e7ff;
-                            font-size: 11px;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                            Text {
+                                text: "⚙";
+                                color: settings-touch.has-hover ? #ffffff : #a5adc9;
+                                font-size: 15px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
 
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.active-shelf = "All";
-                                root.shelf-selected("All");
+                            settings-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.open-settings();
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // Expanded Area (Visible only in Default Mode when not compact)
-            if !root.is-compact : VerticalLayout {
-                spacing: 8px;
+            // Categorized Suggestion Results
+            if root.results.length > 0 : ScrollView {
                 vertical-stretch: 1;
+                width: 100%;
 
-                // Quick Access Shelf row of 4 text anchors ("Apps", "Cmds", "Web", "Settings")
-                Rectangle {
-                    height: 32px;
-                    background: #1e1e24;
-                    border-radius: 6px;
-                    border-width: 1px;
-                    border-color: #2b2b33;
+                VerticalLayout {
+                    spacing: 3px;
+                    padding-right: 4px;
+                    alignment: start;
 
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        spacing: 8px;
+                    for item[index] in root.results : VerticalLayout {
+                        spacing: 3px;
 
-                        Text {
-                            text: "SHELF:";
-                            color: #6e6e7e;
-                            font-size: 11px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                        }
+                        // Category Header (shown at the start of each category in preference order)
+                        if item.is-first-in-category : Rectangle {
+                            height: 24px;
+                            background: transparent;
 
-                        for anchor[idx] in ["Apps", "Cmds", "Web", "Settings"] : Rectangle {
-                            height: 22px;
-                            width: 74px;
-                            y: 5px;
-                            border-radius: 4px;
-                            background: root.active-shelf == anchor ? #4f46e5 : (shelf-touch.has-hover ? #2d2d38 : transparent);
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 8px;
+                                alignment: start;
 
-                            Text {
-                                text: anchor;
-                                color: root.active-shelf == anchor ? #ffffff : #a1a1aa;
-                                font-size: 12px;
-                                font-weight: root.active-shelf == anchor ? 700 : 500;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            shelf-touch := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.context-menu-visible = false;
-                                    if (root.active-shelf == anchor) {
-                                        root.active-shelf = "All";
-                                        root.shelf-selected("All");
-                                    } else {
-                                        root.active-shelf = anchor;
-                                        root.shelf-selected(anchor);
-                                    }
+                                Text {
+                                    text: item.category-header;
+                                    color: #818cf8;
+                                    font-size: 10px;
+                                    font-weight: 800;
+                                    letter-spacing: 0.8px;
+                                    vertical-alignment: center;
                                 }
                             }
                         }
 
-                        Rectangle { horizontal-stretch: 1; }
+                        // Clean Suggestion Row (No cluttering path below)
+                        Rectangle {
+                            height: 42px;
+                            border-radius: 9px;
+                            background: index == root.selected-index ? #23283d : (row-touch.has-hover ? #1a1e2e : transparent);
+                            border-width: index == root.selected-index ? 1px : 0px;
+                            border-color: #4f46e5;
 
+                            row-touch := TouchArea {
+                                width: 100%;
+                                height: 100%;
+                                mouse-cursor: pointer;
+
+                                pointer-event(ev) => {
+                                    if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
+                                        root.context-menu-visible = false;
+                                        root.selected-index = index;
+                                        root.activate-item(index);
+                                    } else if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
+                                        root.selected-index = index;
+                                        root.context-menu-index = index;
+                                        root.context-menu-can-elevate = item.can-elevate;
+                                        root.context-menu-is-app = item.is-app;
+                                        root.context-menu-x = Math.min(self.mouse-x + 16px, root.width - 230px);
+                                        root.context-menu-y = Math.min(self. absolute-position.y - root.absolute-position.y + self.mouse-y, root.height - 115px);
+                                        root.context-menu-visible = true;
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 12px;
+                                alignment: stretch;
+
+                                // Left Category Icon Pill
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        border-radius: 7px;
+                                        background: item.category == "Cmds" ? #312142 :
+                                                    item.category == "Settings" ? #1c2f42 :
+                                                    item.category == "Apps" ? #1f2747 : #1d3532;
+
+                                        Text {
+                                            text: item.icon-text;
+                                            font-size: 13px;
+                                            color: item.category == "Cmds" ? #c084fc :
+                                                   item.category == "Settings" ? #38bdf8 :
+                                                   item.category == "Apps" ? #818cf8 : #34d399;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                // Item Title (Single clean line without paths below)
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: item.title;
+                                    color: index == root.selected-index ? #ffffff : #e2e6f3;
+                                    font-size: 14px;
+                                    font-weight: index == root.selected-index ? 600 : 500;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+
+                                // Quick Hide App Button on Hover/Selection
+                                if item.is-app && (index == root.selected-index || row-touch.has-hover) : VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        height: 22px;
+                                        width: 54px;
+                                        border-radius: 5px;
+                                        background: hide-quick-touch.has-hover ? #3f1d28 : #262b3d;
+                                        border-width: 1px;
+                                        border-color: hide-quick-touch.has-hover ? #f43f5e : #363d56;
+
+                                        Text {
+                                            text: "Hide";
+                                            color: hide-quick-touch.has-hover ? #fda4af : #949cb8;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+
+                                        hide-quick-touch := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                root.hide-app-item(index);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Category Badge
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        height: 22px;
+                                        width: 68px;
+                                        border-radius: 5px;
+                                        background: index == root.selected-index ? #313856 : #1b1f2e;
+
+                                        Text {
+                                            text: item.badge;
+                                            color: index == root.selected-index ? #c7d2fe : #7d86a5;
+                                            font-size: 10px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Bottom Hint Bar when suggestions are open
+            if root.results.length > 0 : Rectangle {
+                height: 26px;
+                background: #151822;
+                border-radius: 7px;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 16px;
+                    alignment: space-between;
+
+                    Text {
+                        text: "↑↓ Navigate   •   ↵ Execute   •   Right-Click Options   •   Esc Hide";
+                        color: #6d7592;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.results.length + " suggestions";
+                        color: #6d7592;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Right-Click Context Menu Overlay
+        if root.context-menu-visible : TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => {
+                root.context-menu-visible = false;
+            }
+
+            Rectangle {
+                x: root.context-menu-x;
+                y: root.context-menu-y;
+                width: 215px;
+                height: (root.context-menu-can-elevate && root.context-menu-is-app) ? 104px :
+                        (root.context-menu-can-elevate || root.context-menu-is-app) ? 72px : 40px;
+                background: #1e2231;
+                border-color: #38405c;
+                border-width: 1px;
+                border-radius: 8px;
+                clip: true;
+
+                VerticalLayout {
+                    padding: 4px;
+                    spacing: 2px;
+
+                    // Open Normally
+                    Rectangle {
+                        height: 30px;
+                        border-radius: 5px;
+                        background: open-item-touch.has-hover ? #313852 : transparent;
+
+                        open-item-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.context-menu-visible = false;
+                                root.activate-item(root.context-menu-index);
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            Text {
+                                text: "▶  Open / Execute";
+                                color: #f1f5f9;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Run as Administrator
+                    if root.context-menu-can-elevate : Rectangle {
+                        height: 30px;
+                        border-radius: 5px;
+                        background: admin-item-touch.has-hover ? #313852 : transparent;
+
+                        admin-item-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.context-menu-visible = false;
+                                root.run-item-admin(root.context-menu-index);
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            Text {
+                                text: "⚡  Run as Administrator";
+                                color: #fcd34d;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Hide App from Suggestions
+                    if root.context-menu-is-app : Rectangle {
+                        height: 30px;
+                        border-radius: 5px;
+                        background: hide-item-touch.has-hover ? #3f1d28 : transparent;
+
+                        hide-item-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.context-menu-visible = false;
+                                root.hide-app-item(root.context-menu-index);
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            Text {
+                                text: "🚫  Hide App from Suggestions";
+                                color: #fda4af;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component SettingsWindow inherits Window {
+    title: "Command Palette Settings";
+    width: 760px;
+    height: 560px;
+    background: #0f1117;
+    icon: root.app-icon;
+
+    in property <image> app-icon;
+    in-out property <int> active-tab: 0;
+    in-out property <bool> show-apps: true;
+    in-out property <string> custom-cmd-path: "cmd.exe";
+    in-out property <string> custom-settings-path: "ms-settings:";
+    in-out property <[UICategoryOrderItem]> category-order: [];
+    in-out property <[UICustomEntry]> custom-entries: [];
+    in-out property <[string]> hidden-apps: [];
+    in-out property <[string]> custom-app-dirs: [];
+    in-out property <[UIBangEntry]> bang-entries: [];
+    in-out property <string> status-message: "";
+
+    // Form state for Tab 1 (Custom Cmd / System Setting)
+    in-out property <string> new-entry-category: "Cmds";
+    in-out property <string> new-entry-title: "";
+    in-out property <string> new-entry-triggers: "";
+    in-out property <string> new-entry-path: "";
+    in-out property <string> new-entry-args: "";
+
+    // Form state for Tab 2 (Hidden Apps & Folders)
+    in-out property <string> new-hidden-app: "";
+    in-out property <string> new-app-dir: "";
+
+    // Form state for Tab 3 (Web Bangs)
+    in-out property <string> new-bang-key: "";
+    in-out property <string> new-bang-url: "";
+
+    callback toggle-show-apps(bool);
+    callback move-category-up(int);
+    callback move-category-down(int);
+    callback save-system-paths(string, string);
+    callback add-custom-entry(string, string, string, string, string);
+    callback remove-custom-entry(int);
+    callback hide-app-by-name(string);
+    callback unhide-app(int);
+    callback add-app-dir(string);
+    callback remove-app-dir(int);
+    callback add-bang(string, string);
+    callback remove-bang(string);
+    callback reload-index();
+    callback close-settings();
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+
+        // Left Navigation Sidebar
+        Rectangle {
+            width: 215px;
+            background: #151822;
+            border-width: 1px;
+            border-color: #222738;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+
+                // App Brand Header
+                HorizontalLayout {
+                    spacing: 10px;
+                    padding-bottom: 12px;
+
+                    Image {
+                        source: root.app-icon;
+                        width: 28px;
+                        height: 28px;
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
                         Text {
-                            text: "Right-click item for Admin";
-                            color: #5a5a66;
+                            text: "Command Palette";
+                            color: #ffffff;
+                            font-size: 14px;
+                            font-weight: 700;
+                        }
+                        Text {
+                            text: "Ctrl + Space";
+                            color: #818cf8;
                             font-size: 11px;
+                        }
+                    }
+                }
+
+                // Sidebar Tabs
+                for tab-label[idx] in [
+                    "1. Preference & Paths",
+                    "2. Custom Cmd & Settings",
+                    "3. Hidden Apps & Folders",
+                    "4. Web Search Bangs"
+                ] : Rectangle {
+                    height: 38px;
+                    border-radius: 8px;
+                    background: root.active-tab == idx ? #4f46e5 : (nav-touch.has-hover ? #1f2436 : transparent);
+
+                    nav-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.active-tab = idx;
+                            root.status-message = "";
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        Text {
+                            text: tab-label;
+                            color: root.active-tab == idx ? #ffffff : #a5adc9;
+                            font-size: 12px;
+                            font-weight: root.active-tab == idx ? 700 : 500;
                             vertical-alignment: center;
                         }
                     }
                 }
 
-                // Vertical List View for Search Results + Context Menu Layer
-                Rectangle {
-                    vertical-stretch: 1;
-                    background: #141418;
-                    border-radius: 8px;
-                    border-width: 1px;
-                    border-color: #26262e;
-                    clip: true;
+                Rectangle { vertical-stretch: 1; }
 
-                    ScrollView {
-                        width: 100%;
-                        height: 100%;
+                // Status message banner
+                if root.status-message != "" : Rectangle {
+                    height: 32px;
+                    border-radius: 6px;
+                    background: #172e2b;
+                    border-width: 1px;
+                    border-color: #10b981;
+
+                    Text {
+                        text: root.status-message;
+                        color: #6ee7b7;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Re-index Button
+                Rectangle {
+                    height: 34px;
+                    border-radius: 7px;
+                    background: reindex-touch.has-hover ? #282f47 : #1e2334;
+                    border-width: 1px;
+                    border-color: #323954;
+
+                    reindex-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.reload-index();
+                        }
+                    }
+
+                    Text {
+                        text: "↻  Rescan Apps & Config";
+                        color: #cbd5e1;
+                        font-size: 12px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Right Content Panel
+        VerticalLayout {
+            horizontal-stretch: 1;
+            padding: 20px;
+            spacing: 14px;
+
+            // TAB 0: PREFERENCE ORDER & DEFAULT SYSTEM PATHS
+            if root.active-tab == 0 : VerticalLayout {
+                spacing: 14px;
+
+                Text {
+                    text: "Category Order of Preference & System Paths";
+                    color: #ffffff;
+                    font-size: 17px;
+                    font-weight: 700;
+                }
+
+                // Show Apps Toggle Card
+                Rectangle {
+                    height: 54px;
+                    border-radius: 10px;
+                    background: #161924;
+                    border-width: 1px;
+                    border-color: #252a3d;
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        alignment: space-between;
 
                         VerticalLayout {
-                            padding: 6px;
-                            spacing: 4px;
-                            alignment: start;
+                            alignment: center;
+                            Text {
+                                text: "Show Installed Applications in Suggestions";
+                                color: #f1f5f9;
+                                font-size: 13px;
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: "Toggle off to hide all Start Menu apps and only show Commands, Settings, and Web";
+                                color: #7c85a3;
+                                font-size: 11px;
+                            }
+                        }
 
-                            for item[index] in root.results : Rectangle {
-                                height: 50px;
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 64px;
+                                height: 28px;
+                                border-radius: 14px;
+                                background: root.show-apps ? #4f46e5 : #2a3045;
+
+                                toggle-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.show-apps = !root.show-apps;
+                                        root.toggle-show-apps(root.show-apps);
+                                    }
+                                }
+
+                                Text {
+                                    text: root.show-apps ? "ON" : "OFF";
+                                    color: #ffffff;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Category Preference Order Card
+                Text {
+                    text: "Suggestion Category Order (Top = Highest Priority)";
+                    color: #a5b4fc;
+                    font-size: 12px;
+                    font-weight: 700;
+                }
+
+                VerticalLayout {
+                    spacing: 6px;
+                    for cat[idx] in root.category-order : Rectangle {
+                        height: 46px;
+                        border-radius: 8px;
+                        background: #161924;
+                        border-width: 1px;
+                        border-color: #252a3d;
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 10px;
+                            alignment: stretch;
+
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 24px;
+                                    height: 24px;
+                                    border-radius: 6px;
+                                    background: #23283d;
+                                    Text {
+                                        text: (idx + 1) + "";
+                                        color: #818cf8;
+                                        font-size: 12px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                Text {
+                                    text: cat.label;
+                                    color: #f1f5f9;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: cat.description;
+                                    color: #7c85a3;
+                                    font-size: 11px;
+                                }
+                            }
+
+                            // Move Up Button
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 30px;
+                                    height: 28px;
+                                    border-radius: 6px;
+                                    background: up-touch.has-hover ? #2f3652 : #202538;
+                                    up-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.move-category-up(idx); }
+                                    }
+                                    Text {
+                                        text: "↑";
+                                        color: #e2e8f0;
+                                        font-size: 13px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Move Down Button
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 30px;
+                                    height: 28px;
+                                    border-radius: 6px;
+                                    background: down-touch.has-hover ? #2f3652 : #202538;
+                                    down-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.move-category-down(idx); }
+                                    }
+                                    Text {
+                                        text: "↓";
+                                        color: #e2e8f0;
+                                        font-size: 13px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Custom System Paths (CMD & System Settings)
+                Text {
+                    text: "Custom Default Paths for CMD & System Settings";
+                    color: #a5b4fc;
+                    font-size: 12px;
+                    font-weight: 700;
+                }
+
+                Rectangle {
+                    height: 118px;
+                    border-radius: 10px;
+                    background: #161924;
+                    border-width: 1px;
+                    border-color: #252a3d;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Text {
+                                width: 155px;
+                                text: "CMD / Terminal Path:";
+                                color: #cbd5e1;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 30px;
                                 border-radius: 6px;
-                                background: root.selected-index == index ? #2b2d42 : (row-touch.has-hover ? #202028 : transparent);
-                                border-width: root.selected-index == index ? 1px : 0px;
-                                border-color: #4f46e5;
+                                background: #0f1117;
+                                border-width: 1px;
+                                border-color: #2e344b;
 
-                                HorizontalLayout {
-                                    padding-left: 12px;
-                                    padding-right: 12px;
-                                    spacing: 12px;
+                                TextInput {
+                                    x: 8px;
+                                    width: parent.width - 16px;
+                                    height: 100%;
+                                    text <=> root.custom-cmd-path;
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                }
+                            }
+                        }
 
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        alignment: center;
-                                        spacing: 2px;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Text {
+                                width: 155px;
+                                text: "System Settings Path:";
+                                color: #cbd5e1;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 30px;
+                                border-radius: 6px;
+                                background: #0f1117;
+                                border-width: 1px;
+                                border-color: #2e344b;
 
-                                        Text {
-                                            text: item.title;
-                                            color: #f4f4f6;
-                                            font-size: 14px;
-                                            font-weight: 600;
-                                            overflow: elide;
-                                        }
+                                TextInput {
+                                    x: 8px;
+                                    width: parent.width - 16px;
+                                    height: 100%;
+                                    text <=> root.custom-settings-path;
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                }
+                            }
 
-                                        Text {
-                                            text: item.subtitle;
-                                            color: #8e8e9e;
-                                            font-size: 11px;
-                                            overflow: elide;
+                            Rectangle {
+                                width: 95px;
+                                height: 30px;
+                                border-radius: 6px;
+                                background: save-paths-touch.has-hover ? #6366f1 : #4f46e5;
+
+                                save-paths-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.save-system-paths(root.custom-cmd-path, root.custom-settings-path);
+                                    }
+                                }
+
+                                Text {
+                                    text: "Save Paths";
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // TAB 1: CUSTOM COMMANDS & SYSTEM SETTINGS
+            if root.active-tab == 1 : VerticalLayout {
+                spacing: 12px;
+
+                Text {
+                    text: "Add Custom System Setting or Command Path";
+                    color: #ffffff;
+                    font-size: 17px;
+                    font-weight: 700;
+                }
+
+                Rectangle {
+                    height: 185px;
+                    border-radius: 10px;
+                    background: #161924;
+                    border-width: 1px;
+                    border-color: #252a3d;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+
+                        // Category Type Switcher
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Text {
+                                width: 110px;
+                                text: "Entry Type:";
+                                color: #cbd5e1;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle {
+                                width: 145px;
+                                height: 28px;
+                                border-radius: 6px;
+                                background: root.new-entry-category == "Cmds" ? #4f46e5 : #202538;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.new-entry-category = "Cmds"; }
+                                }
+                                Text {
+                                    text: "⚡ System Command";
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Rectangle {
+                                width: 145px;
+                                height: 28px;
+                                border-radius: 6px;
+                                background: root.new-entry-category == "Settings" ? #4f46e5 : #202538;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.new-entry-category = "Settings"; }
+                                }
+                                Text {
+                                    text: "⚙ System Setting";
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Name & Triggers Row
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                width: 110px;
+                                text: "Title & Triggers:";
+                                color: #cbd5e1;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 30px;
+                                border-radius: 6px;
+                                background: #0f1117;
+                                border-width: 1px;
+                                border-color: #2e344b;
+                                if root.new-entry-title == "" : Text {
+                                    x: 8px;
+                                    text: "Display Name (e.g. Device Manager)";
+                                    color: #5c647d;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    height: 100%;
+                                }
+                                TextInput {
+                                    x: 8px;
+                                    width: parent.width - 16px;
+                                    height: 100%;
+                                    text <=> root.new-entry-title;
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                }
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 30px;
+                                border-radius: 6px;
+                                background: #0f1117;
+                                border-width: 1px;
+                                border-color: #2e344b;
+                                if root.new-entry-triggers == "" : Text {
+                                    x: 8px;
+                                    text: "Keywords (e.g. devmgmt, devices)";
+                                    color: #5c647d;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    height: 100%;
+                                }
+                                TextInput {
+                                    x: 8px;
+                                    width: parent.width - 16px;
+                                    height: 100%;
+                                    text <=> root.new-entry-triggers;
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                }
+                            }
+                        }
+
+                        // Custom Path / URI Row
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                width: 110px;
+                                text: "Custom Path/URI:";
+                                color: #cbd5e1;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 30px;
+                                border-radius: 6px;
+                                background: #0f1117;
+                                border-width: 1px;
+                                border-color: #2e344b;
+                                if root.new-entry-path == "" : Text {
+                                    x: 8px;
+                                    text: "e.g. C:\\Windows\\System32\\cmd.exe or ms-settings:sound or devmgmt.msc";
+                                    color: #5c647d;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    height: 100%;
+                                }
+                                TextInput {
+                                    x: 8px;
+                                    width: parent.width - 16px;
+                                    height: 100%;
+                                    text <=> root.new-entry-path;
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                }
+                            }
+                        }
+
+                        // Optional Args + Add Button
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                width: 110px;
+                                text: "Arguments:";
+                                color: #cbd5e1;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 30px;
+                                border-radius: 6px;
+                                background: #0f1117;
+                                border-width: 1px;
+                                border-color: #2e344b;
+                                if root.new-entry-args == "" : Text {
+                                    x: 8px;
+                                    text: "Optional arguments (e.g. /k ipconfig)";
+                                    color: #5c647d;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    height: 100%;
+                                }
+                                TextInput {
+                                    x: 8px;
+                                    width: parent.width - 16px;
+                                    height: 100%;
+                                    text <=> root.new-entry-args;
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                }
+                            }
+
+                            Rectangle {
+                                width: 125px;
+                                height: 30px;
+                                border-radius: 6px;
+                                background: add-entry-touch.has-hover ? #6366f1 : #4f46e5;
+                                add-entry-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        if (root.new-entry-title != "" && root.new-entry-path != "") {
+                                            root.add-custom-entry(
+                                                root.new-entry-category,
+                                                root.new-entry-title,
+                                                root.new-entry-triggers,
+                                                root.new-entry-path,
+                                                root.new-entry-args
+                                            );
+                                            root.new-entry-title = "";
+                                            root.new-entry-triggers = "";
+                                            root.new-entry-path = "";
+                                            root.new-entry-args = "";
                                         }
                                     }
+                                }
+                                Text {
+                                    text: "+ Add Custom";
+                                    color: #ffffff;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
 
+                Text {
+                    text: "Configured Custom Commands & System Settings (" + root.custom-entries.length + ")";
+                    color: #a5b4fc;
+                    font-size: 12px;
+                    font-weight: 700;
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 6px;
+                        for entry[idx] in root.custom-entries : Rectangle {
+                            height: 46px;
+                            border-radius: 8px;
+                            background: #161924;
+                            border-width: 1px;
+                            border-color: #252a3d;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 10px;
+
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    Text {
+                                        text: entry.title + "  [" + entry.category + "]";
+                                        color: #f1f5f9;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                    }
+                                    Text {
+                                        text: "Path: " + entry.target-path + (entry.args != "" ? " " + entry.args : "");
+                                        color: #7c85a3;
+                                        font-size: 11px;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
                                     Rectangle {
-                                        width: 78px;
-                                        height: 22px;
-                                        y: 14px;
-                                        border-radius: 4px;
-                                        background: #272730;
-
+                                        width: 72px;
+                                        height: 26px;
+                                        border-radius: 6px;
+                                        background: del-custom-touch.has-hover ? #4c1d2b : #252a3d;
+                                        del-custom-touch := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.remove-custom-entry(idx); }
+                                        }
                                         Text {
-                                            text: item.badge;
-                                            color: #a5b4fc;
+                                            text: "Remove";
+                                            color: #fda4af;
                                             font-size: 11px;
                                             font-weight: 600;
                                             horizontal-alignment: center;
@@ -296,104 +1269,392 @@ export component PaletteWindow inherits Window {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
 
-                                row-touch := TouchArea {
-                                    mouse-cursor: pointer;
-                                    pointer-event(event) => {
-                                        if (event.kind == PointerEventKind.down) {
-                                            if (event.button == PointerEventButton.right) {
-                                                root.selected-index = index;
-                                                root.context-menu-index = index;
-                                                root.context-menu-y = min(index * 54px + 10px, 230px);
-                                                root.context-menu-visible = true;
-                                            } else if (event.button == PointerEventButton.left) {
-                                                root.context-menu-visible = false;
-                                                root.selected-index = index;
-                                                root.activate-item(index);
-                                            }
+            // TAB 2: HIDDEN APPS & CUSTOM APP FOLDERS
+            if root.active-tab == 2 : VerticalLayout {
+                spacing: 12px;
+
+                Text {
+                    text: "Hidden Apps & Custom Application Folders";
+                    color: #ffffff;
+                    font-size: 17px;
+                    font-weight: 700;
+                }
+
+                // Hide App by Name Box
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        border-radius: 6px;
+                        background: #161924;
+                        border-width: 1px;
+                        border-color: #2e344b;
+                        if root.new-hidden-app == "" : Text {
+                            x: 10px;
+                            text: "Enter application name to hide from suggestions...";
+                            color: #5c647d;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            height: 100%;
+                        }
+                        TextInput {
+                            x: 10px;
+                            width: parent.width - 20px;
+                            height: 100%;
+                            text <=> root.new-hidden-app;
+                            color: #ffffff;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            single-line: true;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 110px;
+                        height: 32px;
+                        border-radius: 6px;
+                        background: hide-btn-touch.has-hover ? #6366f1 : #4f46e5;
+                        hide-btn-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                if (root.new-hidden-app != "") {
+                                    root.hide-app-by-name(root.new-hidden-app);
+                                    root.new-hidden-app = "";
+                                }
+                            }
+                        }
+                        Text {
+                            text: "Hide App";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                Text {
+                    text: "Hidden Applications (" + root.hidden-apps.length + ") — Right-click any app in Palette to hide";
+                    color: #a5b4fc;
+                    font-size: 12px;
+                    font-weight: 700;
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 5px;
+                        for app-name[idx] in root.hidden-apps : Rectangle {
+                            height: 36px;
+                            border-radius: 7px;
+                            background: #161924;
+                            border-width: 1px;
+                            border-color: #252a3d;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                alignment: space-between;
+
+                                Text {
+                                    text: app-name;
+                                    color: #e2e8f0;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 72px;
+                                        height: 24px;
+                                        border-radius: 5px;
+                                        background: unhide-touch.has-hover ? #1e3a34 : #23283d;
+                                        unhide-touch := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.unhide-app(idx); }
+                                        }
+                                        Text {
+                                            text: "Unhide";
+                                            color: #6ee7b7;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
                                     }
                                 }
                             }
                         }
                     }
+                }
 
-                    // Simulated Right-Click Context Menu Overlay
-                    if root.context-menu-visible && root.context-menu-index >= 0 : Rectangle {
-                        width: 100%;
-                        height: 100%;
-                        background: #00000044;
+                // Custom Application Scan Directories
+                Text {
+                    text: "Custom Application Scan Directories (" + root.custom-app-dirs.length + ")";
+                    color: #a5b4fc;
+                    font-size: 12px;
+                    font-weight: 700;
+                }
 
-                        TouchArea {
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        border-radius: 6px;
+                        background: #161924;
+                        border-width: 1px;
+                        border-color: #2e344b;
+                        if root.new-app-dir == "" : Text {
+                            x: 10px;
+                            text: "Add custom folder path to index .exe / .lnk (e.g. D:\\Tools)";
+                            color: #5c647d;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            height: 100%;
+                        }
+                        TextInput {
+                            x: 10px;
+                            width: parent.width - 20px;
+                            height: 100%;
+                            text <=> root.new-app-dir;
+                            color: #ffffff;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            single-line: true;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 110px;
+                        height: 32px;
+                        border-radius: 6px;
+                        background: add-dir-touch.has-hover ? #6366f1 : #4f46e5;
+                        add-dir-touch := TouchArea {
+                            mouse-cursor: pointer;
                             clicked => {
-                                root.context-menu-visible = false;
+                                if (root.new-app-dir != "") {
+                                    root.add-app-dir(root.new-app-dir);
+                                    root.new-app-dir = "";
+                                }
                             }
                         }
+                        Text {
+                            text: "+ Add Folder";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
 
-                        Rectangle {
-                            x: 410px;
-                            y: root.context-menu-y;
-                            width: 230px;
-                            height: 82px;
-                            background: #23232c;
-                            border-radius: 8px;
+                ScrollView {
+                    height: 95px;
+                    VerticalLayout {
+                        spacing: 5px;
+                        for dir-path[idx] in root.custom-app-dirs : Rectangle {
+                            height: 34px;
+                            border-radius: 7px;
+                            background: #161924;
                             border-width: 1px;
-                            border-color: #4f46e5;
+                            border-color: #252a3d;
 
-                            VerticalLayout {
-                                padding: 6px;
-                                spacing: 4px;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                alignment: space-between;
 
-                                Rectangle {
-                                    height: 32px;
-                                    border-radius: 5px;
-                                    background: admin-touch.has-hover ? #4f46e5 : #2d2d39;
+                                Text {
+                                    text: dir-path;
+                                    color: #cbd5e1;
+                                    font-size: 12px;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
 
-                                    HorizontalLayout {
-                                        padding-left: 10px;
-                                        padding-right: 10px;
-                                        spacing: 8px;
-
-                                        Text {
-                                            text: "⚡ Run as Admin (Elevated)";
-                                            color: #ffffff;
-                                            font-size: 12px;
-                                            font-weight: 600;
-                                            vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 72px;
+                                        height: 24px;
+                                        border-radius: 5px;
+                                        background: rem-dir-touch.has-hover ? #4c1d2b : #252a3d;
+                                        rem-dir-touch := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.remove-app-dir(idx); }
                                         }
-                                    }
-
-                                    admin-touch := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => {
-                                            root.context-menu-visible = false;
-                                            root.run-item-admin(root.context-menu-index);
+                                        Text {
+                                            text: "Remove";
+                                            color: #fda4af;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
 
-                                Rectangle {
-                                    height: 32px;
-                                    border-radius: 5px;
-                                    background: normal-touch.has-hover ? #343442 : transparent;
+            // TAB 3: WEB BANG SHORTCUTS
+            if root.active-tab == 3 : VerticalLayout {
+                spacing: 12px;
 
-                                    HorizontalLayout {
-                                        padding-left: 10px;
-                                        padding-right: 10px;
+                Text {
+                    text: "Prefix-Free Web Search Bangs";
+                    color: #ffffff;
+                    font-size: 17px;
+                    font-weight: 700;
+                }
 
-                                        Text {
-                                            text: "▶ Run Normally";
-                                            color: #d4d4d8;
-                                            font-size: 12px;
-                                            vertical-alignment: center;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        width: 110px;
+                        height: 32px;
+                        border-radius: 6px;
+                        background: #161924;
+                        border-width: 1px;
+                        border-color: #2e344b;
+                        if root.new-bang-key == "" : Text {
+                            x: 10px;
+                            text: "Key (e.g. yt)";
+                            color: #5c647d;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            height: 100%;
+                        }
+                        TextInput {
+                            x: 10px;
+                            width: parent.width - 20px;
+                            height: 100%;
+                            text <=> root.new-bang-key;
+                            color: #ffffff;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            single-line: true;
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        border-radius: 6px;
+                        background: #161924;
+                        border-width: 1px;
+                        border-color: #2e344b;
+                        if root.new-bang-url == "" : Text {
+                            x: 10px;
+                            text: "URL with {q} (e.g. https://www.youtube.com/results?search_query={q})";
+                            color: #5c647d;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            height: 100%;
+                        }
+                        TextInput {
+                            x: 10px;
+                            width: parent.width - 20px;
+                            height: 100%;
+                            text <=> root.new-bang-url;
+                            color: #ffffff;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            single-line: true;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 105px;
+                        height: 32px;
+                        border-radius: 6px;
+                        background: add-bang-touch.has-hover ? #6366f1 : #4f46e5;
+                        add-bang-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                if (root.new-bang-key != "" && root.new-bang-url != "") {
+                                    root.add-bang(root.new-bang-key, root.new-bang-url);
+                                    root.new-bang-key = "";
+                                    root.new-bang-url = "";
+                                }
+                            }
+                        }
+                        Text {
+                            text: "+ Add Bang";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 5px;
+                        for bang[idx] in root.bang-entries : Rectangle {
+                            height: 38px;
+                            border-radius: 7px;
+                            background: #161924;
+                            border-width: 1px;
+                            border-color: #252a3d;
+
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 10px;
+
+                                Text {
+                                    width: 65px;
+                                    text: "[" + bang.key + "]";
+                                    color: #818cf8;
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: bang.url;
+                                    color: #cbd5e1;
+                                    font-size: 12px;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 72px;
+                                        height: 24px;
+                                        border-radius: 5px;
+                                        background: rem-bang-touch.has-hover ? #4c1d2b : #252a3d;
+                                        rem-bang-touch := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.remove-bang(bang.key); }
                                         }
-                                    }
-
-                                    normal-touch := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => {
-                                            root.context-menu-visible = false;
-                                            root.activate-item(root.context-menu-index);
+                                        Text {
+                                            text: "Remove";
+                                            color: #fda4af;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
                                     }
                                 }
