@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-const DEFAULT_CONFIG_TOML: &str = r#"show_apps = true
+const DEFAULT_CONFIG_TOML: &str = r##"show_apps = true
 theme = "powertoys"
 custom_cmd_path = "cmd.exe"
 custom_system_settings_path = "ms-settings:"
@@ -35,7 +35,7 @@ wiki = "https://en.wikipedia.org/w/index.php?search={q}"
 so = "https://stackoverflow.com/search?q={q}"
 r = "https://www.reddit.com/search/?q={q}"
 maps = "https://www.google.com/maps/search/{q}"
-"#;
+"##;
 
 fn default_true() -> bool {
     true
