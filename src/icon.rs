@@ -15,7 +15,7 @@ pub fn create_slint_app_icon() -> Image {
     Image::from_rgba8(buffer)
 }
 
-pub fn create_win32_tray_icon_ buffers(size: u32) -> (Vec<u8>, Vec<u8>) {
+pub fn create_win32_tray_icon_buffers(size: u32) -> (Vec<u8>, Vec<u8>) {
     let mut bgra = Vec::with_capacity((size * size * 4) as usize);
     let and_mask = vec![0u8; ((size * size) / 8) as usize];
 

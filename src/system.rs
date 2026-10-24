@@ -1,5 +1,4 @@
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemEvent {
@@ -17,7 +16,8 @@ mod win32 {
     use std::ptr::null;
     use std::sync::mpsc::Sender;
     use std::sync::OnceLock;
-    use windows_sys::Win32::Foundation::{ HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use std::thread;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -55,7 +55,7 @@ mod win32 {
         if let Some(tx) = EVENT_SENDER.get() {
             let _ = tx.send(event);
         }
-        slint::invoke_from_event_loop(|| {});
+        let _ = slint::invoke_from_event_loop(|| {});
     }
 
     pub fn spawn_tray_and_hotkey_thread(tx: Sender<SystemEvent>) {
