@@ -1,0 +1,11 @@
+[bangs]
+yt = "https://www.youtube.com/results?search_query={q}"
+g = "https://www.google.com/search?q={q}"
+ddg = "https://duckduckgo.com/?q={q}"
+gh = "https://github.com/search?q={q}"
+rs = "https://docs.rs/releases/search?query={q}"
+crates = "https://crates.io/search?q={q}"
+wiki = "https://en.wikipedia.org/w/index.php?search={q}"
+so = "https://stackoverflow.com/search?q={q}"
+r = "https://www.reddit.com/search/?q={q}"
+maps = "https://www.google.com/maps/search/{q}"

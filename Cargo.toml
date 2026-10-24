@@ -1,0 +1,29 @@
+[package]
+name = "cmdpal-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Ultra-lightweight prefix-free Command Palette in Rust and Slint"
+authors = ["System Architect"]
+
+[dependencies]
+slint = { version = "1.8", default-features = false, features = [
+    "compat-1-2",
+    "std",
+    "backend-winit",
+    "renderer-femtovg",
+] }
+fuzzy-matcher = "0.3.7"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+walkdir = "2.5"
+urlencoding = "2.1"
+
+[build-dependencies]
+slint-build = "1.8"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

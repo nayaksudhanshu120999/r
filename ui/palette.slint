@@ -1,0 +1,407 @@
+import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
+
+export struct UIResultItem {
+    title: string,
+    subtitle: string,
+    badge: string,
+    category: string,
+    can-elevate: bool,
+}
+
+export component PaletteWindow inherits Window {
+    title: "Command Palette";
+    no-frame: true;
+    always-on-top: true;
+    background: #18181b;
+    width: 680px;
+
+    in-out property <string> query-text: "";
+    in-out property <string> active-shelf: "All";
+    in-out property <[UIResultItem]> results: [];
+    in-out property <int> selected-index: 0;
+
+    in-out property <bool> context-menu-visible: false;
+    in-out property <int> context-menu-index: -1;
+    in-out property <length> context-menu-y: 0px;
+
+    // Responsive visibility check for Compact Mode:
+    // Shrinks window down to just the text box when input is empty or yields zero matches.
+    out property <bool> is-compact: root.query-text == "" || root.results.length == 0;
+
+    height: root.is-compact ? 64px : 436px;
+
+    callback query-changed(string);
+    callback shelf-selected(string);
+    callback activate-item(int);
+    callback run-item-admin(int);
+    callback escape-pressed();
+
+    forward-focus: search-input;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #18181b;
+        border-width: 1px;
+        border-color: #2e2e36;
+        border-radius: 10px;
+        clip: true;
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 8px;
+
+            // Primary Text Input Box
+            Rectangle {
+                height: 44px;
+                background: #222228;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: search-input.has-focus ? #6366f1 : #34343e;
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 10px;
+
+                    Text {
+                        text: "⌕";
+                        color: #8b8b99;
+                        font-size: 18px;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        clip: true;
+
+                        search-input := TextInput {
+                            width: 100%;
+                            height: 100%;
+                            text <=> root.query-text;
+                            font-size: 16px;
+                            color: #f4f4f6;
+                            vertical-alignment: center;
+                            single-line: true;
+
+                            edited => {
+                                root.context-menu-visible = false;
+                                root.query-changed(self.text);
+                            }
+
+                            key-pressed(event) => {
+                                if (event.text == Key.UpArrow) {
+                                    root.context-menu-visible = false;
+                                    if (root.selected-index > 0) {
+                                        root.selected-index -= 1;
+                                    }
+                                    return accept;
+                                }
+                                if (event.text == Key.DownArrow) {
+                                    root.context-menu-visible = false;
+                                    if (root.selected-index + 1 < root.results.length) {
+                                        root.selected-index += 1;
+                                    }
+                                    return accept;
+                                }
+                                if (event.text == Key.Return) {
+                                    if (root.context-menu-visible && root.context-menu-index >= 0) {
+                                        root.context-menu-visible = false;
+                                        root.run-item-admin(root.context-menu-index);
+                                    } else if (root.results.length > 0 && root.selected-index >= 0) {
+                                        root.activate-item(root.selected-index);
+                                    }
+                                    return accept;
+                                }
+                                if (event.text == Key.Escape) {
+                                    if (root.context-menu-visible) {
+                                        root.context-menu-visible = false;
+                                    } else {
+                                        root.escape-pressed();
+                                    }
+                                    return accept;
+                                }
+                                return reject;
+                            }
+                        }
+
+                        if root.query-text == "" : Text {
+                            text: "Type a command, setting, bang shortcut (e.g. yt rust), or app name...";
+                            color: #686875;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    if root.active-shelf != "All" : Rectangle {
+                        width: 68px;
+                        height: 24px;
+                        background: #312e81;
+                        border-radius: 4px;
+                        y: 10px;
+
+                        Text {
+                            text: root.active-shelf;
+                            color: #e0e7ff;
+                            font-size: 11px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.active-shelf = "All";
+                                root.shelf-selected("All");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Expanded Area (Visible only in Default Mode when not compact)
+            if !root.is-compact : VerticalLayout {
+                spacing: 8px;
+                vertical-stretch: 1;
+
+                // Quick Access Shelf row of 4 text anchors ("Apps", "Cmds", "Web", "Settings")
+                Rectangle {
+                    height: 32px;
+                    background: #1e1e24;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: #2b2b33;
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "SHELF:";
+                            color: #6e6e7e;
+                            font-size: 11px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+
+                        for anchor[idx] in ["Apps", "Cmds", "Web", "Settings"] : Rectangle {
+                            height: 22px;
+                            width: 74px;
+                            y: 5px;
+                            border-radius: 4px;
+                            background: root.active-shelf == anchor ? #4f46e5 : (shelf-touch.has-hover ? #2d2d38 : transparent);
+
+                            Text {
+                                text: anchor;
+                                color: root.active-shelf == anchor ? #ffffff : #a1a1aa;
+                                font-size: 12px;
+                                font-weight: root.active-shelf == anchor ? 700 : 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            shelf-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.context-menu-visible = false;
+                                    if (root.active-shelf == anchor) {
+                                        root.active-shelf = "All";
+                                        root.shelf-selected("All");
+                                    } else {
+                                        root.active-shelf = anchor;
+                                        root.shelf-selected(anchor);
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        Text {
+                            text: "Right-click item for Admin";
+                            color: #5a5a66;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Vertical List View for Search Results + Context Menu Layer
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: #141418;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #26262e;
+                    clip: true;
+
+                    ScrollView {
+                        width: 100%;
+                        height: 100%;
+
+                        VerticalLayout {
+                            padding: 6px;
+                            spacing: 4px;
+                            alignment: start;
+
+                            for item[index] in root.results : Rectangle {
+                                height: 50px;
+                                border-radius: 6px;
+                                background: root.selected-index == index ? #2b2d42 : (row-touch.has-hover ? #202028 : transparent);
+                                border-width: root.selected-index == index ? 1px : 0px;
+                                border-color: #4f46e5;
+
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    spacing: 12px;
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        alignment: center;
+                                        spacing: 2px;
+
+                                        Text {
+                                            text: item.title;
+                                            color: #f4f4f6;
+                                            font-size: 14px;
+                                            font-weight: 600;
+                                            overflow: elide;
+                                        }
+
+                                        Text {
+                                            text: item.subtitle;
+                                            color: #8e8e9e;
+                                            font-size: 11px;
+                                            overflow: elide;
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        width: 78px;
+                                        height: 22px;
+                                        y: 14px;
+                                        border-radius: 4px;
+                                        background: #272730;
+
+                                        Text {
+                                            text: item.badge;
+                                            color: #a5b4fc;
+                                            font-size: 11px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                row-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    pointer-event(event) => {
+                                        if (event.kind == PointerEventKind.down) {
+                                            if (event.button == PointerEventButton.right) {
+                                                root.selected-index = index;
+                                                root.context-menu-index = index;
+                                                root.context-menu-y = min(index * 54px + 10px, 230px);
+                                                root.context-menu-visible = true;
+                                            } else if (event.button == PointerEventButton.left) {
+                                                root.context-menu-visible = false;
+                                                root.selected-index = index;
+                                                root.activate-item(index);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Simulated Right-Click Context Menu Overlay
+                    if root.context-menu-visible && root.context-menu-index >= 0 : Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        background: #00000044;
+
+                        TouchArea {
+                            clicked => {
+                                root.context-menu-visible = false;
+                            }
+                        }
+
+                        Rectangle {
+                            x: 410px;
+                            y: root.context-menu-y;
+                            width: 230px;
+                            height: 82px;
+                            background: #23232c;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: #4f46e5;
+
+                            VerticalLayout {
+                                padding: 6px;
+                                spacing: 4px;
+
+                                Rectangle {
+                                    height: 32px;
+                                    border-radius: 5px;
+                                    background: admin-touch.has-hover ? #4f46e5 : #2d2d39;
+
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: "⚡ Run as Admin (Elevated)";
+                                            color: #ffffff;
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    admin-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.context-menu-visible = false;
+                                            root.run-item-admin(root.context-menu-index);
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    height: 32px;
+                                    border-radius: 5px;
+                                    background: normal-touch.has-hover ? #343442 : transparent;
+
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+
+                                        Text {
+                                            text: "▶ Run Normally";
+                                            color: #d4d4d8;
+                                            font-size: 12px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    normal-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.context-menu-visible = false;
+                                            root.activate-item(root.context-menu-index);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
