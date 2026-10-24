@@ -387,7 +387,7 @@ export component PaletteWindow inherits Window {
             if root.results.length > 0 : ScrollView {
                 vertical-stretch: 1;
                 width: 100%;
-                viewport-y <=> root.scroll-y;
+                content-y <=> root.scroll-y;
 
                 VerticalLayout {
                     spacing: 3px;
