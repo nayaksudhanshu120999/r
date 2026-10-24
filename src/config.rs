@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 const DEFAULT_CONFIG_TOML: &str = r#"show_apps = true
-theme = "midnight-indigo"
+theme = "powertoys"
 custom_cmd_path = "cmd.exe"
 custom_system_settings_path = "ms-settings:"
 category_order = ["Cmds", "Settings", "Apps", "Files", "Web"]
@@ -13,6 +13,16 @@ hidden_apps = []
 custom_file_scan_paths = []
 custom_commands = []
 custom_settings = []
+
+[custom_theme]
+window_bg = "#1f1f1f"
+surface_bg = "#2b2b2b"
+card_bg = "#282828"
+selected_bg = "#383838"
+border = "#3d3d3d"
+accent = "#60cdff"
+text_primary = "#ffffff"
+text_muted = "#9d9d9d"
 
 [bangs]
 yt = "https://www.youtube.com/results?search_query={q}"
@@ -32,7 +42,7 @@ fn default_true() -> bool {
 }
 
 fn default_theme() -> String {
-    "midnight-indigo".to_string()
+    "powertoys".to_string()
 }
 
 fn default_cmd_path() -> String {
@@ -54,6 +64,33 @@ fn default_category_order() -> Vec<String> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CustomThemeConfig {
+    pub window_bg: String,
+    pub surface_bg: String,
+    pub card_bg: String,
+    pub selected_bg: String,
+    pub border: String,
+    pub accent: String,
+    pub text_primary: String,
+    pub text_muted: String,
+}
+
+impl Default for CustomThemeConfig {
+    fn default() -> Self {
+        Self {
+            window_bg: "#1f1f1f".to_string(),
+            surface_bg: "#2b2b2b".to_string(),
+            card_bg: "#282828".to_string(),
+            selected_bg: "#383838".to_string(),
+            border: "#3d3d3d".to_string(),
+            accent: "#60cdff".to_string(),
+            text_primary: "#ffffff".to_string(),
+            text_muted: "#9d9d9d".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CustomCommandItem {
     pub name: String,
     pub command: String,
@@ -71,6 +108,8 @@ pub struct AppConfig {
     pub show_apps: bool,
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default)]
+    pub custom_theme: CustomThemeConfig,
     #[serde(default = "default_cmd_path")]
     pub custom_cmd_path: String,
     #[serde(default = "default_settings_path")]
@@ -94,6 +133,7 @@ impl Default for AppConfig {
         toml::from_str(DEFAULT_CONFIG_TOML).unwrap_or(Self {
             show_apps: true,
             theme: default_theme(),
+            custom_theme: CustomThemeConfig::default(),
             custom_cmd_path: default_cmd_path(),
             custom_system_settings_path: default_settings_path(),
             category_order: default_category_order(),
@@ -137,11 +177,12 @@ impl AppConfig {
             .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
             .collect();
 
-        if self.theme.trim().is_empty() {
-            self.theme = default_theme();
+        let t = self.theme.trim().to_ascii_lowercase();
+        self.theme = if t == "custom" {
+            "custom".to_string()
         } else {
-            self.theme = self.theme.trim().to_ascii_lowercase();
-        }
+            "powertoys".to_string()
+        };
 
         if self.custom_cmd_path.trim().is_empty() {
             self.custom_cmd_path = default_cmd_path();
@@ -155,7 +196,6 @@ impl AppConfig {
             self.custom_system_settings_path = self.custom_system_settings_path.trim().to_string();
         }
 
-        // Ensure all 5 categories exist in order of preference
         let mut ordered = Vec::with_capacity(5);
         for item in &self.category_order {
             let cat = ShelfCategory::from_label(item).as_str().to_string();
@@ -171,7 +211,6 @@ impl AppConfig {
         }
         self.category_order = ordered;
 
-        // Deduplicate hidden_apps case-insensitively
         let mut clean_hidden = Vec::new();
         for app in &self.hidden_apps {
             let trimmed = app.trim();
@@ -185,7 +224,6 @@ impl AppConfig {
         }
         self.hidden_apps = clean_hidden;
 
-        // Deduplicate custom_file_scan_paths
         let mut clean_paths = Vec::new();
         for p in &self.custom_file_scan_paths {
             let trimmed = p.trim();

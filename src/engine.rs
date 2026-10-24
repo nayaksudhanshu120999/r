@@ -3,8 +3,7 @@ use crate::models::{AppEntry, CandidateItem, ExecutionTarget, ScannedFileEntry, 
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 
-const MAX_APP_RESULTS: usize = 14;
-const MAX_FILE_RESULTS: usize = 12;
+const MAX_TOTAL_RESULTS: usize = 24;
 
 struct StaticCommandSpec {
     title: &'static str,
@@ -34,47 +33,7 @@ const PRIORITY_SPECS: &[StaticCommandSpec] = &[
         settings_uri: None,
         is_palette_settings: true,
     },
-    // Core System Commands
-    StaticCommandSpec {
-        title: "Open Command Prompt (CMD)",
-        badge: "COMMAND",
-        category: ShelfCategory::Cmds,
-        triggers: &["cmd", "command prompt", "terminal", "shell"],
-        program: "cmd.exe",
-        args: &[],
-        settings_uri: None,
-        is_palette_settings: false,
-    },
-    StaticCommandSpec {
-        title: "Open PowerShell",
-        badge: "COMMAND",
-        category: ShelfCategory::Cmds,
-        triggers: &["powershell", "pwsh", "ps"],
-        program: "powershell.exe",
-        args: &[],
-        settings_uri: None,
-        is_palette_settings: false,
-    },
-    StaticCommandSpec {
-        title: "Task Manager",
-        badge: "COMMAND",
-        category: ShelfCategory::Cmds,
-        triggers: &["task manager", "taskmgr", "processes"],
-        program: "taskmgr.exe",
-        args: &[],
-        settings_uri: None,
-        is_palette_settings: false,
-    },
-    StaticCommandSpec {
-        title: "Control Panel",
-        badge: "COMMAND",
-        category: ShelfCategory::Cmds,
-        triggers: &["control panel", "control"],
-        program: "control.exe",
-        args: &[],
-        settings_uri: None,
-        is_palette_settings: false,
-    },
+    // Core System Power Commands Only (CMD & PowerShell removed from System Commands)
     StaticCommandSpec {
         title: "Shutdown Computer",
         badge: "COMMAND",
@@ -219,7 +178,45 @@ impl QueryEngine {
         }
     }
 
-    pub fn evaluate(&self, raw_input: &str) -> Vec<CandidateItem> {
+    /// Detects when the user types `<bang> ` (e.g. `"yt "`) to activate the Bang Pill Chip.
+    pub fn extract_bang_prefix(&self, raw_input: &str) -> Option<(String, String)> {
+        let (first_token, remainder) = raw_input.split_once(char::is_whitespace)?;
+        let key = first_token.trim().to_ascii_lowercase();
+        if self.config.bangs.contains_key(&key) {
+            Some((key, remainder.trim_start().to_string()))
+        } else {
+            None
+        }
+    }
+
+    pub fn evaluate_with_bang(&self, active_bang: &str, raw_input: &str) -> Vec<CandidateItem> {
+        let bang_key = active_bang.trim().to_ascii_lowercase();
+
+        if !bang_key.is_empty() {
+            if let Some(url_template) = self.config.bangs.get(&bang_key) {
+                let query = raw_input.trim();
+                let encoded = urlencoding::encode(query);
+                let target_url = url_template.replace("{q}", &encoded);
+                let title = if query.is_empty() {
+                    format!(
+                        "Type a query to search {}...",
+                        bang_key.to_ascii_uppercase()
+                    )
+                } else {
+                    format!("Search {} for \"{}\"", bang_key.to_ascii_uppercase(), query)
+                };
+
+                return vec![CandidateItem {
+                    title,
+                    badge: "BANG",
+                    category: ShelfCategory::Web,
+                    can_elevate: false,
+                    score: 10_000,
+                    target: ExecutionTarget::WebUrl(target_url),
+                }];
+            }
+        }
+
         let trimmed = raw_input.trim();
         if trimmed.is_empty() {
             return Vec::new();
@@ -227,61 +224,61 @@ impl QueryEngine {
 
         let normalized = trimmed.to_ascii_lowercase();
 
-        let mut cmds_list = self.match_commands(&normalized, trimmed);
-        let mut settings_list = self.match_settings(&normalized, trimmed);
-        let mut apps_list = self.match_apps(trimmed);
-        let mut files_list = self.match_custom_files(trimmed);
-        let mut bang_list = Vec::new();
+        let mut all_matches = Vec::with_capacity(32);
+        all_matches.extend(self.match_commands(&normalized, trimmed));
+        all_matches.extend(self.match_settings(&normalized, trimmed));
+        all_matches.extend(self.match_apps(&normalized, trimmed));
+        all_matches.extend(self.match_custom_files(&normalized, trimmed));
 
-        if let Some(bang_item) = self.match_prefix_free_bang(trimmed) {
-            bang_list.push(bang_item);
-        }
+        let cat_order = self.config.ordered_categories();
+        let cat_rank = |cat: ShelfCategory| -> usize {
+            cat_order.iter().position(|&c| c == cat).unwrap_or(99)
+        };
 
-        cmds_list.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
-        settings_list.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
-        apps_list.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
-        apps_list.truncate(MAX_APP_RESULTS);
-        files_list.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
-        files_list.truncate(MAX_FILE_RESULTS);
+        all_matches.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| cat_rank(a.category).cmp(&cat_rank(b.category)))
+                .then_with(|| a.title.cmp(&b.title))
+        });
 
-        let mut ordered_results = Vec::new();
+        all_matches.truncate(MAX_TOTAL_RESULTS);
 
-        let has_explicit_bang = !bang_list.is_empty();
-        if has_explicit_bang {
-            ordered_results.extend(bang_list.drain(..));
-        }
+        let encoded = urlencoding::encode(trimmed);
+        let google_url = format!("https://www.google.com/search?q={}", encoded);
+        all_matches.push(CandidateItem {
+            title: format!("Search Google for \"{}\"", trimmed),
+            badge: "WEB",
+            category: ShelfCategory::Web,
+            can_elevate: false,
+            score: 0,
+            target: ExecutionTarget::WebUrl(google_url),
+        });
 
-        for category in self.config.ordered_categories() {
-            match category {
-                ShelfCategory::Cmds => ordered_results.append(&mut cmds_list),
-                ShelfCategory::Settings => ordered_results.append(&mut settings_list),
-                ShelfCategory::Apps => ordered_results.append(&mut apps_list),
-                ShelfCategory::Files => ordered_results.append(&mut files_list),
-                ShelfCategory::Web => {
-                    if !has_explicit_bang {
-                        ordered_results.append(&mut bang_list);
-                    }
-                }
-            }
-        }
-
-        if !has_explicit_bang {
-            let encoded = urlencoding::encode(trimmed);
-            let google_url = format!("https://www.google.com/search?q={}", encoded);
-            ordered_results.push(CandidateItem {
-                title: format!("Search Google for \"{}\"", trimmed),
-                badge: "WEB",
-                category: ShelfCategory::Web,
-                can_elevate: false,
-                score: 1,
-                target: ExecutionTarget::WebUrl(google_url),
-            });
-        }
-
-        ordered_results
+        all_matches
     }
 
-    fn match_apps(&self, trimmed: &str) -> Vec<CandidateItem> {
+    fn compute_fuzzy_score(
+        &self,
+        candidate_name: &str,
+        candidate_lower: &str,
+        query_lower: &str,
+        raw_query: &str,
+    ) -> Option<i64> {
+        let mut score = self.matcher.fuzzy_match(candidate_name, raw_query)?;
+
+        if candidate_lower == query_lower {
+            score += 500;
+        } else if candidate_lower.starts_with(query_lower) {
+            score += 220 - (candidate_lower.len() as i64).min(80);
+        } else if candidate_lower.contains(query_lower) {
+            score += 90 - (candidate_lower.len() as i64).min(50);
+        }
+
+        Some(score)
+    }
+
+    fn match_apps(&self, normalized_query: &str, raw_query: &str) -> Vec<CandidateItem> {
         if !self.config.show_apps {
             return Vec::new();
         }
@@ -290,7 +287,12 @@ impl QueryEngine {
             .iter()
             .filter(|app| !self.config.is_app_hidden(&app.name))
             .filter_map(|app| {
-                let score = self.matcher.fuzzy_match(&app.name, trimmed)?;
+                let score = self.compute_fuzzy_score(
+                    &app.name,
+                    &app.name_lower,
+                    normalized_query,
+                    raw_query,
+                )?;
                 Some(CandidateItem {
                     title: app.name.clone(),
                     badge: "APP",
@@ -303,11 +305,16 @@ impl QueryEngine {
             .collect()
     }
 
-    fn match_custom_files(&self, trimmed: &str) -> Vec<CandidateItem> {
+    fn match_custom_files(&self, normalized_query: &str, raw_query: &str) -> Vec<CandidateItem> {
         self.custom_files
             .iter()
             .filter_map(|file| {
-                let score = self.matcher.fuzzy_match(&file.display_name, trimmed)?;
+                let score = self.compute_fuzzy_score(
+                    &file.display_name,
+                    &file.name_lower,
+                    normalized_query,
+                    raw_query,
+                )?;
                 Some(CandidateItem {
                     title: file.display_name.clone(),
                     badge: "FILE",
@@ -323,7 +330,6 @@ impl QueryEngine {
     fn match_commands(&self, normalized_query: &str, raw_query: &str) -> Vec<CandidateItem> {
         let mut results = Vec::new();
 
-        // 1. Built-in commands
         for spec in PRIORITY_SPECS
             .iter()
             .filter(|s| s.category == ShelfCategory::Cmds)
@@ -331,14 +337,6 @@ impl QueryEngine {
             if let Some(score) =
                 self.score_triggers_and_title(normalized_query, raw_query, spec.title, spec.triggers)
             {
-                let program = if spec.program.eq_ignore_ascii_case("cmd.exe")
-                    || spec.program.eq_ignore_ascii_case("cmd")
-                {
-                    self.config.custom_cmd_path.clone()
-                } else {
-                    spec.program.to_string()
-                };
-
                 results.push(CandidateItem {
                     title: spec.title.to_string(),
                     badge: spec.badge,
@@ -346,14 +344,13 @@ impl QueryEngine {
                     can_elevate: true,
                     score,
                     target: ExecutionTarget::SystemProcess {
-                        program,
+                        program: spec.program.to_string(),
                         args: spec.args.iter().map(|s| (*s).to_string()).collect(),
                     },
                 });
             }
         }
 
-        // 2. Simplified user-defined Custom Commands
         for custom in &self.config.custom_commands {
             let trigger_slice = [custom.name.as_str()];
             if let Some(score) = self.score_triggers_and_title(
@@ -379,7 +376,6 @@ impl QueryEngine {
     fn match_settings(&self, normalized_query: &str, raw_query: &str) -> Vec<CandidateItem> {
         let mut results = Vec::new();
 
-        // 1. Built-in settings
         for spec in PRIORITY_SPECS
             .iter()
             .filter(|s| s.category == ShelfCategory::Settings)
@@ -410,7 +406,6 @@ impl QueryEngine {
             }
         }
 
-        // 2. Simplified user-defined Custom Settings
         for custom in &self.config.custom_settings {
             let trigger_slice = [custom.name.as_str()];
             if let Some(score) = self.score_triggers_and_title(
@@ -440,60 +435,19 @@ impl QueryEngine {
         title: &str,
         triggers: &[&str],
     ) -> Option<i64> {
-        let mut best_score: Option<i64> = None;
+        let title_lower = title.to_ascii_lowercase();
+        let mut best_score =
+            self.compute_fuzzy_score(title, &title_lower, normalized_query, raw_query);
 
-        for trigger in triggers {
-            let t_low = trigger.to_ascii_lowercase();
-            let s = if t_low == normalized_query {
-                Some(20_000)
-            } else if t_low.starts_with(normalized_query) && normalized_query.len() >= 2 {
-                Some(12_000 - (t_low.len() as i64))
-            } else if normalized_query.len() >= 3 && t_low.contains(normalized_query) {
-                Some(8_000 - (t_low.len() as i64))
-            } else {
-                None
-            };
-
-            if let Some(val) = s {
-                best_score = Some(best_score.map_or(val, |curr| curr.max(val)));
+        for &trigger in triggers {
+            let t_lower = trigger.to_ascii_lowercase();
+            if let Some(s) =
+                self.compute_fuzzy_score(trigger, &t_lower, normalized_query, raw_query)
+            {
+                best_score = Some(best_score.map_or(s, |curr| curr.max(s)));
             }
         }
 
-        if best_score.is_none() && normalized_query.len() >= 2 {
-            if let Some(fuzzy_s) = self.matcher.fuzzy_match(title, raw_query) {
-                if fuzzy_s >= 45 {
-                    best_score = Some(fuzzy_s);
-                }
-            }
-        }
-
-        best_score
-    }
-
-    fn match_prefix_free_bang(&self, trimmed_input: &str) -> Option<CandidateItem> {
-        let (first_token, remainder) = trimmed_input.split_once(char::is_whitespace)?;
-        let search_payload = remainder.trim();
-        if search_payload.is_empty() {
-            return None;
-        }
-
-        let lookup_key = first_token.to_ascii_lowercase();
-        let url_template = self.config.bangs.get(&lookup_key)?;
-
-        let encoded_payload = urlencoding::encode(search_payload);
-        let target_url = url_template.replace("{q}", &encoded_payload);
-
-        Some(CandidateItem {
-            title: format!(
-                "[{}] Search: {}",
-                lookup_key.to_ascii_uppercase(),
-                search_payload
-            ),
-            badge: "BANG",
-            category: ShelfCategory::Web,
-            can_elevate: false,
-            score: 15_000,
-            target: ExecutionTarget::WebUrl(target_url),
-        })
+        best_score.filter(|&s| normalized_query.len() >= 2 || s >= 120)
     }
 }

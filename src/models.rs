@@ -53,9 +53,9 @@ impl ShelfCategory {
 
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Cmds => "Built-in power actions, terminal commands, and custom commands",
-            Self::Settings => "Windows ms-settings URIs, Control Panel, and custom settings",
-            Self::Apps => "Start Menu applications enabled in the Installed Apps tab",
+            Self::Cmds => "Power actions and user-configured custom commands",
+            Self::Settings => "Windows ms-settings URIs and custom system settings",
+            Self::Apps => "Start Menu applications enabled in Installed Apps",
             Self::Files => "Files indexed exclusively from your Custom File Scan paths",
             Self::Web => "Prefix-free bang shortcuts and fallback web search",
         }
@@ -74,22 +74,15 @@ impl ShelfCategory {
 
 #[derive(Debug, Clone)]
 pub enum ExecutionTarget {
-    /// Executes a command program with discrete argument list
     SystemProcess {
         program: String,
         args: Vec<String>,
     },
-    /// Executes a user-defined custom command string or executable path
     CustomCommand(String),
-    /// Opens a Windows ms-settings URI or custom setting path/applet
     SettingsUri(String),
-    /// Opens an HTTP/HTTPS URL in the system default browser
     WebUrl(String),
-    /// Launches a local application shortcut (.lnk) or executable (.exe)
     AppPath(PathBuf),
-    /// Opens a file from a custom scan path using the default system handler
     FilePath(PathBuf),
-    /// Opens the built-in Command Palette Settings GUI
     OpenPaletteSettings,
 }
 
@@ -106,11 +99,13 @@ pub struct CandidateItem {
 #[derive(Debug, Clone)]
 pub struct AppEntry {
     pub name: String,
+    pub name_lower: String,
     pub path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
 pub struct ScannedFileEntry {
     pub display_name: String,
+    pub name_lower: String,
     pub path: PathBuf,
 }

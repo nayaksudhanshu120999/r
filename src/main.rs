@@ -8,27 +8,29 @@ mod indexer;
 mod models;
 mod system;
 
-use config::{AppConfig, CustomCommandItem, CustomSettingItem};
+use config::{AppConfig, CustomCommandItem, CustomSettingItem, CustomThemeConfig};
 use engine::QueryEngine;
 use executor::execute_candidate;
 use icon::create_slint_app_icon;
 use indexer::{build_custom_files_index, build_start_menu_index};
 use models::{CandidateItem, ExecutionTarget};
 use slint::{
-    ComponentHandle, LogicalPosition, LogicalSize, ModelRc, SharedString, Timer, TimerMode,
+    Color, ComponentHandle, LogicalPosition, LogicalSize, ModelRc, SharedString, Timer, TimerMode,
     VecModel,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use system::{
-    activate_window_by_title, check_outside_click_or_focus_loss, init_system_integration,
-    primary_screen_size, SystemEvent,
+    activate_window_by_title, check_outside_click_or_focus_loss, enable_window_maximize,
+    ensure_single_instance_or_activate_existing, init_system_integration, primary_screen_size,
+    shutdown_system_integration, SystemEvent,
 };
 
 slint::include_modules!();
 
 const PALETTE_TITLE: &str = "Command Palette";
+const SETTINGS_TITLE: &str = "Command Palette Settings";
 const CONFIG_FILE_PATH: &str = "config.toml";
 const WINDOW_WIDTH: f32 = 680.0;
 const COMPACT_HEIGHT: f32 = 68.0;
@@ -42,16 +44,22 @@ struct PaletteState {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // 1. Single-Instance Lock: prevents multiple tray icons and activates existing instance
+    if !ensure_single_instance_or_activate_existing() {
+        return Ok(());
+    }
+
     let config = AppConfig::load_or_create(CONFIG_FILE_PATH);
     let indexed_apps = build_start_menu_index();
     let indexed_files = build_custom_files_index(&config.custom_file_scan_paths);
     let engine = QueryEngine::new(config, indexed_apps, indexed_files);
 
     let app_icon = create_slint_app_icon();
+    let initial_theme = build_ui_theme_colors(&engine.config);
 
     let palette_ui = PaletteWindow::new()?;
     palette_ui.set_app_icon(app_icon.clone());
-    palette_ui.set_theme_id(SharedString::from(engine.config.theme.as_str()));
+    palette_ui.set_theme(initial_theme.clone());
     palette_ui.set_dynamic_height(COMPACT_HEIGHT);
     palette_ui
         .window()
@@ -59,7 +67,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let settings_ui = SettingsWindow::new()?;
     settings_ui.set_app_icon(app_icon);
-    settings_ui.set_theme_id(SharedString::from(engine.config.theme.as_str()));
+    settings_ui.set_theme(initial_theme);
 
     let state = Rc::new(RefCell::new(PaletteState {
         engine,
@@ -70,18 +78,54 @@ fn main() -> Result<(), slint::PlatformError> {
 
     sync_settings_ui(&settings_ui, &state.borrow().engine);
 
-    // Query input edited callback
+    // Query input edited callback (Handles Bang Pill Chip creation when user types e.g. "yt ")
     {
         let ui_weak = palette_ui.as_weak();
         let state_ref = Rc::clone(&state);
         palette_ui.on_query_changed(move |query| {
+            let Some(window) = ui_weak.upgrade() else {
+                return;
+            };
+
+            let current_bang = window.get_active_bang().to_string();
+            let raw_q = query.to_string();
+
+            if current_bang.is_empty() {
+                let maybe_bang = {
+                    let st = state_ref.borrow();
+                    st.engine.extract_bang_prefix(&raw_q)
+                };
+
+                if let Some((bang_key, remainder)) = maybe_bang {
+                    window.set_active_bang(SharedString::from(bang_key.as_str()));
+                    window.set_active_bang_label(SharedString::from(
+                        bang_key.to_ascii_uppercase().as_str(),
+                    ));
+                    window.set_query_text(SharedString::from(remainder.as_str()));
+                    refresh_results(&window, &state_ref, &bang_key, &remainder);
+                    return;
+                }
+            }
+
+            refresh_results(&window, &state_ref, &current_bang, &raw_q);
+        });
+    }
+
+    // Clear active Bang Pill Chip (Backspace on empty query or clicking ✕ on chip)
+    {
+        let ui_weak = palette_ui.as_weak();
+        let state_ref = Rc::clone(&state);
+        palette_ui.on_clear_active_bang(move || {
             if let Some(window) = ui_weak.upgrade() {
-                refresh_results(&window, &state_ref, query.as_str());
+                window.set_active_bang(SharedString::from(""));
+                window.set_active_bang_label(SharedString::from(""));
+                let q = window.get_query_text().to_string();
+                refresh_results(&window, &state_ref, "", &q);
             }
         });
     }
 
-    // Activate item (Enter or Left-Click) -> Executes task and auto-hides palette
+    // Activate item (Enter or Left-Click)
     {
         let ui_weak = palette_ui.as_weak();
         let settings_weak = settings_ui.as_weak();
@@ -101,9 +145,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         hide_palette(&window, &state_ref);
                     }
                     if let Some(settings_win) = settings_weak.upgrade() {
-                        sync_settings_ui(&settings_win, &state_ref.borrow().engine);
-                        let _ = settings_win.show();
-                        activate_window_by_title("Command Palette Settings");
+                        open_settings_window(&settings_win, &state_ref.borrow().engine);
                     }
                 } else if execute_candidate(&item, false, &cmd_path).is_ok() {
                     if let Some(window) = ui_weak.upgrade() {
@@ -147,9 +189,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 hide_palette(&window, &state_ref);
             }
             if let Some(settings_win) = settings_weak.upgrade() {
-                sync_settings_ui(&settings_win, &state_ref.borrow().engine);
-                let _ = settings_win.show();
-                activate_window_by_title("Command Palette Settings");
+                open_settings_window(&settings_win, &state_ref.borrow().engine);
             }
         });
     }
@@ -160,9 +200,11 @@ fn main() -> Result<(), slint::PlatformError> {
         let state_ref = Rc::clone(&state);
         palette_ui.on_escape_pressed(move || {
             if let Some(window) = ui_weak.upgrade() {
-                if !window.get_query_text().is_empty() {
+                if !window.get_query_text().is_empty() || !window.get_active_bang().is_empty() {
+                    window.set_active_bang(SharedString::from(""));
+                    window.set_active_bang_label(SharedString::from(""));
                     window.set_query_text(SharedString::from(""));
-                    refresh_results(&window, &state_ref, "");
+                    refresh_results(&window, &state_ref, "", "");
                 } else {
                     hide_palette(&window, &state_ref);
                 }
@@ -170,13 +212,10 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // Wire up SettingsWindow callbacks
     wire_settings_callbacks(&settings_ui, &palette_ui, &state);
 
-    // Initialize Taskbar System Tray & Global Ctrl+Space Shortcut
     let sys_rx = init_system_integration();
 
-    // Background timer: handles Tray/Hotkey events & auto-hide on focus loss / outside click
     let monitor_timer = Timer::default();
     {
         let ui_weak = palette_ui.as_weak();
@@ -189,6 +228,11 @@ fn main() -> Result<(), slint::PlatformError> {
             move || {
                 while let Ok(ev) = sys_rx.try_recv() {
                     match ev {
+                        SystemEvent::ShowPalette => {
+                            if let Some(window) = ui_weak.upgrade() {
+                                show_and_focus_palette(&window, &state_ref);
+                            }
+                        }
                         SystemEvent::TogglePalette => {
                             if let Some(window) = ui_weak.upgrade() {
                                 let is_vis = state_ref.borrow().palette_visible;
@@ -204,25 +248,23 @@ fn main() -> Result<(), slint::PlatformError> {
                                 hide_palette(&window, &state_ref);
                             }
                             if let Some(settings_win) = settings_weak.upgrade() {
-                                sync_settings_ui(&settings_win, &state_ref.borrow().engine);
-                                let _ = settings_win.show();
-                                activate_window_by_title("Command Palette Settings");
+                                open_settings_window(&settings_win, &state_ref.borrow().engine);
                             }
                         }
                         SystemEvent::ReloadConfig => {
                             let new_cfg = AppConfig::load_or_create(CONFIG_FILE_PATH);
                             let new_apps = build_start_menu_index();
                             let new_files = build_custom_files_index(&new_cfg.custom_file_scan_paths);
+                            let ui_theme = build_ui_theme_colors(&new_cfg);
                             {
                                 let mut st = state_ref.borrow_mut();
                                 st.engine = QueryEngine::new(new_cfg, new_apps, new_files);
                             }
                             if let Some(pal) = ui_weak.upgrade() {
-                                pal.set_theme_id(SharedString::from(
-                                    state_ref.borrow().engine.config.theme.as_str(),
-                                ));
+                                pal.set_theme(ui_theme.clone());
                             }
                             if let Some(settings_win) = settings_weak.upgrade() {
+                                settings_win.set_theme(ui_theme);
                                 sync_settings_ui(&settings_win, &state_ref.borrow().engine);
                                 settings_win.set_status_message(SharedString::from(
                                     "All indexes & config reloaded!",
@@ -230,6 +272,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             }
                         }
                         SystemEvent::QuitApp => {
+                            shutdown_system_integration();
                             let _ = slint::quit_event_loop();
                         }
                     }
@@ -253,7 +296,16 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     show_and_focus_palette(&palette_ui, &state);
-    slint::run_event_loop_until_quit()
+    let res = slint::run_event_loop_until_quit();
+    shutdown_system_integration();
+    res
+}
+
+fn open_settings_window(settings_win: &SettingsWindow, engine: &QueryEngine) {
+    sync_settings_ui(settings_win, engine);
+    let _ = settings_win.show();
+    enable_window_maximize(SETTINGS_TITLE);
+    activate_window_by_title(SETTINGS_TITLE);
 }
 
 fn show_and_focus_palette(window: &PaletteWindow, state_ref: &Rc<RefCell<PaletteState>>) {
@@ -277,16 +329,25 @@ fn show_and_focus_palette(window: &PaletteWindow, state_ref: &Rc<RefCell<Palette
 
 fn hide_palette(window: &PaletteWindow, state_ref: &Rc<RefCell<PaletteState>>) {
     window.set_context_menu_visible(false);
+    window.set_active_bang(SharedString::from(""));
+    window.set_active_bang_label(SharedString::from(""));
     window.set_query_text(SharedString::from(""));
-    refresh_results(window, state_ref, "");
-    state_ref.borrow_mut().palette_visible = false;
+    refresh_results(window, state_ref, "", "");
+    let mut st = state_ref.borrow_mut();
+    st.palette_visible = false;
+    st.current_candidates.clear();
     let _ = window.hide();
 }
 
-fn refresh_results(window: &PaletteWindow, state_ref: &Rc<RefCell<PaletteState>>, query: &str) {
+fn refresh_results(
+    window: &PaletteWindow,
+    state_ref: &Rc<RefCell<PaletteState>>,
+    active_bang: &str,
+    query: &str,
+) {
     let candidates = {
         let state = state_ref.borrow();
-        state.engine.evaluate(query)
+        state.engine.evaluate_with_bang(active_bang, query)
     };
 
     let mut header_count = 0usize;
@@ -302,12 +363,19 @@ fn refresh_results(window: &PaletteWindow, state_ref: &Rc<RefCell<PaletteState>>
                 prev_category = Some(cat_str);
             }
 
+            let score_label = if c.score > 0 && c.score < 10_000 {
+                format!("score {}", c.score)
+            } else {
+                String::new()
+            };
+
             UIResultItem {
                 title: SharedString::from(c.title.as_str()),
                 badge: SharedString::from(c.badge),
                 category: SharedString::from(cat_str),
                 category_header: SharedString::from(c.category.header_title()),
                 icon_text: SharedString::from(c.category.icon_glyph()),
+                score_text: SharedString::from(score_label.as_str()),
                 can_elevate: c.can_elevate,
                 is_first_in_category: is_first,
             }
@@ -323,7 +391,7 @@ fn refresh_results(window: &PaletteWindow, state_ref: &Rc<RefCell<PaletteState>>
         COMPACT_HEIGHT
     } else {
         let rows_h = (ui_items.len() as f32) * 45.0;
-        let headers_h = (header_count as f32) * 27.0;
+        let headers_h = (header_count as f32) * 25.0;
         (COMPACT_HEIGHT + rows_h + headers_h + 42.0).min(MAX_EXPANDED_HEIGHT)
     };
 
@@ -336,10 +404,73 @@ fn refresh_results(window: &PaletteWindow, state_ref: &Rc<RefCell<PaletteState>>
     window.set_results(ModelRc::from(Rc::new(VecModel::from(ui_items))));
 }
 
+fn parse_hex_color(hex: &str, fallback: Color) -> Color {
+    let clean = hex.trim().trim_start_matches('#');
+    if clean.len() == 6 {
+        if let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&clean[0..2], 16),
+            u8::from_str_radix(&clean[2..4], 16),
+            u8::from_str_radix(&clean[4..6], 16),
+        ) {
+            return Color::from_rgb_u8(r, g, b);
+        }
+    }
+    fallback
+}
+
+fn build_ui_theme_colors(config: &AppConfig) -> UIThemeColors {
+    let default_pt = UIThemeColors {
+        window_bg: Color::from_rgb_u8(0x1f, 0x1f, 0x1f),
+        surface_bg: Color::from_rgb_u8(0x2b, 0x2b, 0x2b),
+        card_bg: Color::from_rgb_u8(0x28, 0x28, 0x28),
+        hover_bg: Color::from_rgb_u8(0x32, 0x32, 0x32),
+        selected_bg: Color::from_rgb_u8(0x38, 0x38, 0x38),
+        border: Color::from_rgb_u8(0x3d, 0x3d, 0x3d),
+        accent: Color::from_rgb_u8(0x60, 0xcd, 0xff),
+        text_primary: Color::from_rgb_u8(0xff, 0xff, 0xff),
+        text_secondary: Color::from_rgb_u8(0xd6, 0xd6, 0xd6),
+        text_muted: Color::from_rgb_u8(0x9d, 0x9d, 0x9d),
+    };
+
+    if config.theme == "custom" {
+        let ct = &config.custom_theme;
+        let selected = parse_hex_color(&ct.selected_bg, default_pt.selected_bg);
+        let text_pri = parse_hex_color(&ct.text_primary, default_pt.text_primary);
+        UIThemeColors {
+            window_bg: parse_hex_color(&ct.window_bg, default_pt.window_bg),
+            surface_bg: parse_hex_color(&ct.surface_bg, default_pt.surface_bg),
+            card_bg: parse_hex_color(&ct.card_bg, default_pt.card_bg),
+            hover_bg: selected,
+            selected_bg: selected,
+            border: parse_hex_color(&ct.border, default_pt.border),
+            accent: parse_hex_color(&ct.accent, default_pt.accent),
+            text_primary: text_pri,
+            text_secondary: text_pri,
+            text_muted: parse_hex_color(&ct.text_muted, default_pt.text_muted),
+        }
+    } else {
+        default_pt
+    }
+}
+
 fn sync_settings_ui(settings_ui: &SettingsWindow, engine: &QueryEngine) {
     let config = &engine.config;
+    let ui_theme = build_ui_theme_colors(config);
 
-    settings_ui.set_theme_id(SharedString::from(config.theme.as_str()));
+    settings_ui.set_theme_mode(SharedString::from(config.theme.as_str()));
+    settings_ui.set_theme(ui_theme);
+
+    settings_ui.set_custom_window_bg(SharedString::from(config.custom_theme.window_bg.as_str()));
+    settings_ui.set_custom_surface_bg(SharedString::from(config.custom_theme.surface_bg.as_str()));
+    settings_ui.set_custom_card_bg(SharedString::from(config.custom_theme.card_bg.as_str()));
+    settings_ui.set_custom_selected_bg(SharedString::from(config.custom_theme.selected_bg.as_str()));
+    settings_ui.set_custom_border(SharedString::from(config.custom_theme.border.as_str()));
+    settings_ui.set_custom_accent(SharedString::from(config.custom_theme.accent.as_str()));
+    settings_ui.set_custom_text_primary(SharedString::from(
+        config.custom_theme.text_primary.as_str(),
+    ));
+    settings_ui.set_custom_text_muted(SharedString::from(config.custom_theme.text_muted.as_str()));
+
     settings_ui.set_show_apps(config.show_apps);
     settings_ui.set_custom_cmd_path(SharedString::from(config.custom_cmd_path.as_str()));
     settings_ui.set_custom_settings_path(SharedString::from(
@@ -347,7 +478,7 @@ fn sync_settings_ui(settings_ui: &SettingsWindow, engine: &QueryEngine) {
     ));
     settings_ui.set_indexed_files_count(engine.custom_files.len() as i32);
 
-    // 1. Category Preference Order
+    // 1. Category Order
     let cat_items: Vec<UICategoryOrderItem> = config
         .ordered_categories()
         .into_iter()
@@ -359,15 +490,12 @@ fn sync_settings_ui(settings_ui: &SettingsWindow, engine: &QueryEngine) {
         .collect();
     settings_ui.set_category_order(ModelRc::from(Rc::new(VecModel::from(cat_items))));
 
-    // 2. Installed Apps with Checkboxes (filtered by app-filter-text)
+    // 2. Installed Apps with Checkboxes
     let filter_q = settings_ui.get_app_filter_text().to_ascii_lowercase();
     let app_toggle_items: Vec<UIAppToggleItem> = engine
         .apps
         .iter()
-        .filter(|app| {
-            filter_q.trim().is_empty()
-                || app.name.to_ascii_lowercase().contains(filter_q.trim())
-        })
+        .filter(|app| filter_q.trim().is_empty() || app.name_lower.contains(filter_q.trim()))
         .map(|app| UIAppToggleItem {
             name: SharedString::from(app.name.as_str()),
             visible: !config.is_app_hidden(&app.name),
@@ -375,7 +503,7 @@ fn sync_settings_ui(settings_ui: &SettingsWindow, engine: &QueryEngine) {
         .collect();
     settings_ui.set_app_items(ModelRc::from(Rc::new(VecModel::from(app_toggle_items))));
 
-    // 3. Separated Custom Commands
+    // 3. Custom Commands
     let cmd_items: Vec<UISimpleEntry> = config
         .custom_commands
         .iter()
@@ -386,7 +514,7 @@ fn sync_settings_ui(settings_ui: &SettingsWindow, engine: &QueryEngine) {
         .collect();
     settings_ui.set_custom_commands(ModelRc::from(Rc::new(VecModel::from(cmd_items))));
 
-    // 4. Separated Custom System Settings
+    // 4. Custom System Settings
     let set_items: Vec<UISimpleEntry> = config
         .custom_settings
         .iter()
@@ -423,29 +551,65 @@ fn wire_settings_callbacks(
     palette_ui: &PaletteWindow,
     state: &Rc<RefCell<PaletteState>>,
 ) {
-    // Select Predefined Theme
+    // Use PowerToys Default Theme
     {
         let settings_weak = settings_ui.as_weak();
         let palette_weak = palette_ui.as_weak();
         let state_ref = Rc::clone(state);
-        settings_ui.on_select_theme(move |theme_id| {
-            let t_str = theme_id.trim().to_string();
-            {
+        settings_ui.on_use_powertoys_theme(move || {
+            let ui_theme = {
                 let mut st = state_ref.borrow_mut();
-                st.engine.config.theme = t_str.clone();
+                st.engine.config.theme = "powertoys".to_string();
                 st.engine.config.save(CONFIG_FILE_PATH);
-            }
+                build_ui_theme_colors(&st.engine.config)
+            };
             if let Some(pal) = palette_weak.upgrade() {
-                pal.set_theme_id(SharedString::from(t_str.as_str()));
+                pal.set_theme(ui_theme);
             }
             if let Some(win) = settings_weak.upgrade() {
                 sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from("Theme applied!"));
+                win.set_status_message(SharedString::from(
+                    "Applied PowerToys Command Palette theme!",
+                ));
             }
         });
     }
 
-    // Move Category Up in Preference Order
+    // Save & Apply User Custom Theme
+    {
+        let settings_weak = settings_ui.as_weak();
+        let palette_weak = palette_ui.as_weak();
+        let state_ref = Rc::clone(state);
+        settings_ui.on_save_custom_theme(
+            move |win_bg, surf_bg, card_bg, sel_bg, border, accent, txt_pri, txt_muted| {
+                let ui_theme = {
+                    let mut st = state_ref.borrow_mut();
+                    st.engine.config.theme = "custom".to_string();
+                    st.engine.config.custom_theme = CustomThemeConfig {
+                        window_bg: win_bg.trim().to_string(),
+                        surface_bg: surf_bg.trim().to_string(),
+                        card_bg: card_bg.trim().to_string(),
+                        selected_bg: sel_bg.trim().to_string(),
+                        border: border.trim().to_string(),
+                        accent: accent.trim().to_string(),
+                        text_primary: txt_pri.trim().to_string(),
+                        text_muted: txt_muted.trim().to_string(),
+                    };
+                    st.engine.config.save(CONFIG_FILE_PATH);
+                    build_ui_theme_colors(&st.engine.config)
+                };
+                if let Some(pal) = palette_weak.upgrade() {
+                    pal.set_theme(ui_theme);
+                }
+                if let Some(win) = settings_weak.upgrade() {
+                    sync_settings_ui(&win, &state_ref.borrow().engine);
+                    win.set_status_message(SharedString::from("Applied & saved Custom Theme!"));
+                }
+            },
+        );
+    }
+
+    // Move Category Up
     {
         let settings_weak = settings_ui.as_weak();
         let state_ref = Rc::clone(state);
@@ -461,13 +625,13 @@ fn wire_settings_callbacks(
                 }
                 if let Some(win) = settings_weak.upgrade() {
                     sync_settings_ui(&win, &state_ref.borrow().engine);
-                    win.set_status_message(SharedString::from("Updated category preference order"));
+                    win.set_status_message(SharedString::from("Updated category order"));
                 }
             }
         });
     }
 
-    // Move Category Down in Preference Order
+    // Move Category Down
     {
         let settings_weak = settings_ui.as_weak();
         let state_ref = Rc::clone(state);
@@ -482,12 +646,12 @@ fn wire_settings_callbacks(
             }
             if let Some(win) = settings_weak.upgrade() {
                 sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from("Updated category preference order"));
+                win.set_status_message(SharedString::from("Updated category order"));
             }
         });
     }
 
-    // Filter Installed Apps List in Settings
+    // Filter Installed Apps List
     {
         let settings_weak = settings_ui.as_weak();
         let state_ref = Rc::clone(state);
@@ -498,7 +662,7 @@ fn wire_settings_callbacks(
         });
     }
 
-    // Toggle Individual App Checkbox (Show / Hide App)
+    // Toggle Individual App Checkbox
     {
         let settings_weak = settings_ui.as_weak();
         let state_ref = Rc::clone(state);
@@ -564,7 +728,7 @@ fn wire_settings_callbacks(
         });
     }
 
-    // Add Simplified Custom Command
+    // Add Custom Command
     {
         let settings_weak = settings_ui.as_weak();
         let state_ref = Rc::clone(state);
@@ -626,7 +790,7 @@ fn wire_settings_callbacks(
         });
     }
 
-    // Add Simplified Custom System Setting
+    // Add Custom System Setting
     {
         let settings_weak = settings_ui.as_weak();
         let state_ref = Rc::clone(state);
@@ -671,7 +835,7 @@ fn wire_settings_callbacks(
         });
     }
 
-    // Add Custom File Scan Path (Scans ONLY added paths to open files directly)
+    // Add Custom File Scan Path
     {
         let settings_weak = settings_ui.as_weak();
         let state_ref = Rc::clone(state);
@@ -762,6 +926,7 @@ fn wire_settings_callbacks(
             let cfg = AppConfig::load_or_create(CONFIG_FILE_PATH);
             let apps = build_start_menu_index();
             let files = build_custom_files_index(&cfg.custom_file_scan_paths);
+            let ui_theme = build_ui_theme_colors(&cfg);
             {
                 let mut st = state_ref.borrow_mut();
                 st.engine = QueryEngine::new(cfg, apps, files);
@@ -771,11 +936,10 @@ fn wire_settings_callbacks(
                 win.set_status_message(SharedString::from("Rescanned Apps & Custom File Paths!"));
             }
             if let Some(pal) = palette_weak.upgrade() {
-                pal.set_theme_id(SharedString::from(
-                    state_ref.borrow().engine.config.theme.as_str(),
-                ));
+                pal.set_theme(ui_theme);
+                let bang = pal.get_active_bang().to_string();
                 let q = pal.get_query_text().to_string();
-                refresh_results(&pal, &state_ref, &q);
+                refresh_results(&pal, &state_ref, &bang, &q);
             }
         });
     }

@@ -7,7 +7,6 @@ use walkdir::WalkDir;
 pub fn build_start_menu_index() -> Vec<AppEntry> {
     let mut roots = Vec::with_capacity(2);
 
-    // 1. System-wide Start Menu: C:\ProgramData\Microsoft\Windows\Start Menu\Programs
     let program_data = env::var("PROGRAMDATA").unwrap_or_else(|_| r"C:\ProgramData".to_string());
     let global_start_menu = PathBuf::from(program_data)
         .join("Microsoft")
@@ -16,7 +15,6 @@ pub fn build_start_menu_index() -> Vec<AppEntry> {
         .join("Programs");
     roots.push(global_start_menu);
 
-    // 2. Per-user Start Menu: C:\Users\<User>\AppData\Roaming\Microsoft\Windows\Start Menu\Programs
     if let Ok(appdata) = env::var("APPDATA") {
         let user_start_menu = PathBuf::from(appdata)
             .join("Microsoft")
@@ -63,17 +61,18 @@ pub fn build_start_menu_index() -> Vec<AppEntry> {
                 continue;
             }
 
-            let dedup_key = clean_name.to_ascii_lowercase();
-            if seen_names.insert(dedup_key) {
+            let name_lower = clean_name.to_ascii_lowercase();
+            if seen_names.insert(name_lower.clone()) {
                 entries.push(AppEntry {
                     name: clean_name.to_string(),
+                    name_lower,
                     path: path.to_path_buf(),
                 });
             }
         }
     }
 
-    entries.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+    entries.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
     entries.shrink_to_fit();
     entries
 }
@@ -94,13 +93,13 @@ pub fn build_custom_files_index(custom_paths: &[String]) -> Vec<ScannedFileEntry
             continue;
         }
 
-        // If the user added a single file path directly, include it
         if root.is_file() {
             if let Some(name) = root.file_name().and_then(|n| n.to_str()) {
                 let key = root.to_string_lossy().to_ascii_lowercase();
                 if seen_paths.insert(key) {
                     files.push(ScannedFileEntry {
                         display_name: name.to_string(),
+                        name_lower: name.to_ascii_lowercase(),
                         path: root,
                     });
                 }
@@ -108,7 +107,6 @@ pub fn build_custom_files_index(custom_paths: &[String]) -> Vec<ScannedFileEntry
             continue;
         }
 
-        // Otherwise scan the custom directory (skipping noisy hidden/build folders)
         let walker = WalkDir::new(&root)
             .follow_links(false)
             .max_depth(5)
@@ -134,17 +132,14 @@ pub fn build_custom_files_index(custom_paths: &[String]) -> Vec<ScannedFileEntry
             if seen_paths.insert(key) {
                 files.push(ScannedFileEntry {
                     display_name: clean_name.to_string(),
+                    name_lower: clean_name.to_ascii_lowercase(),
                     path: path.to_path_buf(),
                 });
             }
         }
     }
 
-    files.sort_by(|a, b| {
-        a.display_name
-            .to_ascii_lowercase()
-            .cmp(&b.display_name.to_ascii_lowercase())
-    });
+    files.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
     files.shrink_to_fit();
     files
 }
