@@ -1,6 +1,6 @@
 [package]
 name = "cmdpal-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Ultra-lightweight prefix-free Command Palette in Rust and Slint"
 authors = ["System Architect"]
@@ -18,8 +18,19 @@ toml = "0.8"
 walkdir = "2.5"
 urlencoding = "2.1"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.48", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+] }
+
 [build-dependencies]
 slint-build = "1.8"
+winresource = "0.1"
 
 [profile.release]
 opt-level = "z"

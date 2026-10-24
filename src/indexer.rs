@@ -4,12 +4,11 @@ use std::env;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-pub fn build_start_menu_index() -> Vec<AppEntry> {
-    let mut roots = Vec::with_capacity(2);
+pub fn build_start_menu_index(custom_dirs: &[String]) -> Vec<AppEntry> {
+    let mut roots = Vec::with_capacity(2 + custom_dirs.len());
 
     // 1. System-wide Start Menu: C:\ProgramData\Microsoft\Windows\Start Menu\Programs
-    let program_data = env::var("PROGRAMDATA")
-        .unwrap_or_else(|_| r"C:\ProgramData".to_string());
+    let program_data = env::var("PROGRAMDATA").unwrap_or_else(|_| r"C:\ProgramData".to_string());
     let global_start_menu = PathBuf::from(program_data)
         .join("Microsoft")
         .join("Windows")
@@ -34,6 +33,14 @@ pub fn build_start_menu_index() -> Vec<AppEntry> {
             .join("Start Menu")
             .join("Programs");
         roots.push(user_start_menu);
+    }
+
+    // 3. User-configured custom application directories
+    for dir in custom_dirs {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            roots.push(PathBuf::from(trimmed));
+        }
     }
 
     let mut seen_names = HashSet::with_capacity(256);
@@ -66,12 +73,9 @@ pub fn build_start_menu_index() -> Vec<AppEntry> {
 
             let dedup_key = clean_name.to_ascii_lowercase();
             if seen_names.insert(dedup_key) {
-                let path_buf = path.to_path_buf();
-                let display_path = path_buf.to_string_lossy().into_owned();
                 entries.push(AppEntry {
                     name: clean_name.to_string(),
-                    path: path_buf,
-                    display_path,
+                    path: path.to_path_buf(),
                 });
             }
         }

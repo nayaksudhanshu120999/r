@@ -1,32 +1,66 @@
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShelfCategory {
-    All,
-    Apps,
     Cmds,
-    Web,
     Settings,
+    Apps,
+    Web,
 }
 
 impl ShelfCategory {
     pub fn from_label(label: &str) -> Self {
-        match label {
-            "Apps" => Self::Apps,
-            "Cmds" => Self::Cmds,
-            "Web" => Self::Web,
-            "Settings" => Self::Settings,
-            _ => Self::All,
+        match label.trim().to_ascii_lowercase().as_str() {
+            "cmds" | "cmd" | "commands" | "command" => Self::Cmds,
+            "settings" | "setting" => Self::Settings,
+            "apps" | "app" | "applications" => Self::Apps,
+            "web" | "bang" | "search" => Self::Web,
+            _ => Self::Apps,
         }
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::All => "All",
-            Self::Apps => "Apps",
             Self::Cmds => "Cmds",
-            Self::Web => "Web",
             Self::Settings => "Settings",
+            Self::Apps => "Apps",
+            Self::Web => "Web",
+        }
+    }
+
+    pub fn header_title(&self) -> &'static str {
+        match self {
+            Self::Cmds => "SYSTEM COMMANDS",
+            Self::Settings => "SYSTEM SETTINGS",
+            Self::Apps => "APPLICATIONS",
+            Self::Web => "WEB SEARCH",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Cmds => "System Commands",
+            Self::Settings => "System Settings",
+            Self::Apps => "Installed Applications",
+            Self::Web => "Web Search & Bangs",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Cmds => "Power actions, terminal commands, and custom scripts",
+            Self::Settings => "Windows ms-settings URIs, Control Panel, and custom settings",
+            Self::Apps => "Start Menu shortcuts and custom application folders",
+            Self::Web => "Prefix-free bang shortcuts and fallback web search",
+        }
+    }
+
+    pub fn icon_glyph(&self) -> &'static str {
+        match self {
+            Self::Cmds => "⚡",
+            Self::Settings => "⚙",
+            Self::Apps => "❖",
+            Self::Web => "🌐",
         }
     }
 }
@@ -35,21 +69,22 @@ impl ShelfCategory {
 pub enum ExecutionTarget {
     /// Executes a command program with discrete argument list
     SystemProcess {
-        program: &'static str,
-        args: &'static [&'static str],
+        program: String,
+        args: Vec<String>,
     },
-    /// Opens a Windows ms-settings URI
-    SettingsUri(&'static str),
+    /// Opens a Windows ms-settings URI or custom setting path/applet
+    SettingsUri(String),
     /// Opens an HTTP/HTTPS URL in the system default browser
     WebUrl(String),
     /// Launches a local application shortcut (.lnk) or executable (.exe)
     AppPath(PathBuf),
+    /// Opens the built-in Command Palette Settings GUI
+    OpenPaletteSettings,
 }
 
 #[derive(Debug, Clone)]
 pub struct CandidateItem {
     pub title: String,
-    pub subtitle: String,
     pub badge: &'static str,
     pub category: ShelfCategory,
     pub can_elevate: bool,
@@ -61,5 +96,4 @@ pub struct CandidateItem {
 pub struct AppEntry {
     pub name: String,
     pub path: PathBuf,
-    pub display_path: String,
 }

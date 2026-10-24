@@ -1,97 +1,138 @@
 use crate::models::{CandidateItem, ExecutionTarget};
+use std::io;
+use std::os::windows::process::CommandExt;
+use std::path::Path;
 use std::process::Command;
 
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-
-#[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-pub fn execute_candidate(item: &CandidateItem, run_as_admin: bool) -> Result<(), String> {
+pub fn execute_candidate(item: &CandidateItem, run_as_admin: bool) -> io::Result<()> {
+    match &item.target {
+        ExecutionTarget::SystemProcess { program, args } => {
+            spawn_system_process(program, args, run_as_admin)
+        }
+        ExecutionTarget::SettingsUri(uri_or_path) => spawn_settings_target(uri_or_path),
+        ExecutionTarget::WebUrl(url) => spawn_shell_url(url),
+        ExecutionTarget::AppPath(path) => spawn_app_path(path, run_as_admin),
+        ExecutionTarget::OpenPaletteSettings => Ok(()),
+    }
+}
+
+fn spawn_system_process(program: &str, args: &[String], run_as_admin: bool) -> io::Result<()> {
+    let trimmed_prog = program.trim();
+    if trimmed_prog.is_empty() {
+        return Ok(());
+    }
+
     if run_as_admin {
-        return execute_elevated(&item.target);
-    }
-    execute_standard(&item.target)
-}
+        let escaped_prog = escape_ps_single_quoted(trimmed_prog);
+        let ps_command = if args.is_empty() {
+            format!("Start-Process -FilePath '{}' -Verb RunAs", escaped_prog)
+        } else {
+            let joined_args = args
+                .iter()
+                .map(|a| format!("'{}'", escape_ps_single_quoted(a)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Start-Process -FilePath '{}' -ArgumentList @({}) -Verb RunAs",
+                escaped_prog, joined_args
+            )
+        };
 
-fn execute_standard(target: &ExecutionTarget) -> Result<(), String> {
-    match target {
-        ExecutionTarget::SystemProcess { program, args } => {
-            let mut cmd = Command::new(program);
-            cmd.args(*args);
-            #[cfg(target_os = "windows")]
+        Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &ps_command,
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
+    } else {
+        // Interactive console shells (cmd, powershell, wt, taskmgr, control) should show their window
+        let lower = trimmed_prog.to_ascii_lowercase();
+        let is_interactive = lower.contains("cmd")
+            || lower.contains("powershell")
+            || lower.contains("pwsh")
+            || lower.contains("wt")
+            || lower.contains("taskmgr")
+            || lower.contains("control");
+
+        let mut cmd = Command::new(trimmed_prog);
+        cmd.args(args);
+        if !is_interactive {
             cmd.creation_flags(CREATE_NO_WINDOW);
-            cmd.spawn().map_err(|e| e.to_string())?;
-            Ok(())
         }
-        ExecutionTarget::SettingsUri(uri) => open_shell_target(uri),
-        ExecutionTarget::WebUrl(url) => open_shell_target(url),
-        ExecutionTarget::AppPath(path) => {
-            let path_str = path.to_string_lossy();
-            open_shell_target(&path_str)
-        }
+        cmd.spawn()?;
     }
-}
-
-fn open_shell_target(target_uri_or_path: &str) -> Result<(), String> {
-    let mut cmd = Command::new("explorer.exe");
-    cmd.arg(target_uri_or_path);
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd.spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
 
-fn execute_elevated(target: &ExecutionTarget) -> Result<(), String> {
-    let ps_script = match target {
-        ExecutionTarget::SystemProcess { program, args } => {
-            if args.is_empty() {
-                format!(
-                    "Start-Process -FilePath '{}' -Verb RunAs",
-                    escape_ps_single_quotes(program)
-                )
-            } else {
-                let joined_args = args.join(" ");
-                format!(
-                    "Start-Process -FilePath '{}' -ArgumentList '{}' -Verb RunAs",
-                    escape_ps_single_quotes(program),
-                    escape_ps_single_quotes(&joined_args)
-                )
-            }
-        }
-        ExecutionTarget::AppPath(path) => {
-            let path_str = path.to_string_lossy();
-            format!(
-                "Start-Process -FilePath '{}' -Verb RunAs",
-                escape_ps_single_quotes(&path_str)
-            )
-        }
-        ExecutionTarget::SettingsUri(uri) => {
-            format!(
-                "Start-Process -FilePath 'explorer.exe' -ArgumentList '{}' -Verb RunAs",
-                escape_ps_single_quotes(uri)
-            )
-        }
-        ExecutionTarget::WebUrl(url) => {
-            return open_shell_target(url);
-        }
-    };
+fn spawn_settings_target(uri_or_path: &str) -> io::Result<()> {
+    let trimmed = uri_or_path.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
 
-    let mut cmd = Command::new("powershell.exe");
-    cmd.args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
-        "-Command",
-        &ps_script,
-    ]);
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd.spawn().map_err(|e| e.to_string())?;
+    if trimmed.starts_with("ms-settings:") {
+        Command::new("explorer.exe")
+            .arg(trimmed)
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
+    } else if Path::new(trimmed).exists() || trimmed.ends_with(".cpl") || trimmed.ends_with(".msc") {
+        Command::new("cmd.exe")
+            .args(["/C", "start", "", trimmed])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
+    } else {
+        Command::new("explorer.exe")
+            .arg(trimmed)
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
+    }
     Ok(())
 }
 
-fn escape_ps_single_quotes(input: &str) -> String {
+fn spawn_shell_url(url: &str) -> io::Result<()> {
+    Command::new("explorer.exe")
+        .arg(url)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()?;
+    Ok(())
+}
+
+fn spawn_app_path(path: &Path, run_as_admin: bool) -> io::Result<()> {
+    let path_str = path.to_string_lossy();
+
+    if run_as_admin {
+        let ps_command = format!(
+            "Start-Process -FilePath '{}' -Verb RunAs",
+            escape_ps_single_quoted(&path_str)
+        );
+        Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &ps_command,
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
+    } else {
+        Command::new("cmd.exe")
+            .args(["/C", "start", "", &path_str])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
+    }
+
+    Ok(())
+}
+
+fn escape_ps_single_quoted(input: &str) -> String {
     input.replace('\'', "''")
 }
