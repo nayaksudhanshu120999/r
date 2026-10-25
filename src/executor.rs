@@ -3,6 +3,9 @@ use std::io;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
+use std::ptr::{null, null_mut};
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
+use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -131,10 +134,7 @@ fn spawn_settings_target(uri_or_path: &str) -> io::Result<()> {
     }
 
     if trimmed.starts_with("ms-settings:") {
-        Command::new("explorer.exe")
-            .arg(trimmed)
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()?;
+        shell_execute_open(trimmed)?;
     } else if Path::new(trimmed).exists()
         || trimmed.ends_with(".cpl")
         || trimmed.ends_with(".msc")
@@ -144,19 +144,40 @@ fn spawn_settings_target(uri_or_path: &str) -> io::Result<()> {
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()?;
     } else {
-        Command::new("explorer.exe")
-            .arg(trimmed)
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()?;
+        shell_execute_open(trimmed)?;
     }
     Ok(())
 }
 
 fn spawn_shell_url(url: &str) -> io::Result<()> {
-    Command::new("explorer.exe")
-        .arg(url)
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()?;
+    shell_execute_open(url)
+}
+
+fn shell_execute_open(target: &str) -> io::Result<()> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    let file: Vec<u16> = trimmed.encode_utf16().chain(std::iter::once(0)).collect();
+
+    let result = unsafe {
+        ShellExecuteW(
+            null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            null(),
+            null(),
+            SW_SHOWNORMAL as i32,
+        )
+    };
+
+    // ShellExecuteW returns a value greater than 32 on success.
+    if (result as isize) <= 32 {
+        return Err(io::Error::last_os_error());
+    }
+
     Ok(())
 }
 
