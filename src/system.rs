@@ -3,20 +3,17 @@ use std::ffi::OsStr;
 use std::mem::zeroed;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
-use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
-};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
     KEY_SET_VALUE, REG_SZ,
 };
-use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
     MOD_SHIFT, MOD_WIN, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON, VK_SPACE,
@@ -60,12 +57,8 @@ const IDM_QUIT_APP: usize = 2004;
 
 const HIDDEN_CLASS_NAME: &str = "CmdPalRsTrayHostWindowClass";
 const HIDDEN_WINDOW_TITLE: &str = "CmdPalRsTrayHostWindow";
-const SINGLE_INSTANCE_MUTEX: &str = "Local\\CmdPalRsSingleInstanceMutex_v2";
-
 static EVENT_TX: OnceLock<Mutex<Sender<SystemEvent>>> = OnceLock::new();
 static HOST_HWND: AtomicIsize = AtomicIsize::new(0);
-static SINGLETON_MUTEX_HANDLE: AtomicUsize = AtomicUsize::new(0);
-
 fn to_wide_null(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(Some(0)).collect()
 }
@@ -162,27 +155,16 @@ pub fn request_config_reload() {
 }
 
 pub fn ensure_single_instance_or_activate_existing() -> bool {
-    let mutex_name = to_wide_null(SINGLE_INSTANCE_MUTEX);
+    let class_w = to_wide_null(HIDDEN_CLASS_NAME);
+    let title_w = to_wide_null(HIDDEN_WINDOW_TITLE);
     unsafe {
-        let handle = CreateMutexW(null(), 0, mutex_name.as_ptr());
-        if handle.is_null() {
-            return true;
-        }
-
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            let class_w = to_wide_null(HIDDEN_CLASS_NAME);
-            let title_w = to_wide_null(HIDDEN_WINDOW_TITLE);
-            let existing_hwnd = FindWindowW(class_w.as_ptr(), title_w.as_ptr());
-            if !existing_hwnd.is_null() {
-                let _ = PostMessageW(existing_hwnd, WM_IPC_SHOW_PALETTE, 0, 0);
-            }
-            let _ = CloseHandle(handle);
+        let existing_hwnd = FindWindowW(class_w.as_ptr(), title_w.as_ptr());
+        if !existing_hwnd.is_null() {
+            let _ = PostMessageW(existing_hwnd, WM_IPC_SHOW_PALETTE, 0, 0);
             return false;
         }
-
-        SINGLETON_MUTEX_HANDLE.store(handle as usize, Ordering::SeqCst);
-        true
     }
+    true
 }
 
 pub fn shutdown_system_integration() {
@@ -190,13 +172,6 @@ pub fn shutdown_system_integration() {
     if hwnd_val != 0 {
         unsafe {
             let _ = PostMessageW(hwnd_val as HWND, WM_IPC_SHUTDOWN, 0, 0);
-        }
-    }
-
-    let mutex_val = SINGLETON_MUTEX_HANDLE.swap(0, Ordering::SeqCst);
-    if mutex_val != 0 {
-        unsafe {
-            let _ = CloseHandle(mutex_val as *mut _);
         }
     }
 }
