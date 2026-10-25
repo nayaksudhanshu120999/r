@@ -1,4 +1,6 @@
 show_apps = true
+run_on_startup = false
+hotkey = "Ctrl+Space"
 theme = "powertoys"
 custom_cmd_path = "cmd.exe"
 custom_system_settings_path = "ms-settings:"

@@ -2,9 +2,11 @@ use crate::models::ShelfCategory;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const DEFAULT_CONFIG_TOML: &str = r##"show_apps = true
+run_on_startup = false
+hotkey = "Ctrl+Space"
 theme = "powertoys"
 custom_cmd_path = "cmd.exe"
 custom_system_settings_path = "ms-settings:"
@@ -39,6 +41,10 @@ maps = "https://www.google.com/maps/search/{q}"
 
 fn default_true() -> bool {
     true
+}
+
+fn default_hotkey() -> String {
+    "Ctrl+Space".to_string()
 }
 
 fn default_theme() -> String {
@@ -106,6 +112,10 @@ pub struct CustomSettingItem {
 pub struct AppConfig {
     #[serde(default = "default_true")]
     pub show_apps: bool,
+    #[serde(default)]
+    pub run_on_startup: bool,
+    #[serde(default = "default_hotkey")]
+    pub hotkey: String,
     #[serde(default = "default_theme")]
     pub theme: String,
     #[serde(default)]
@@ -132,6 +142,8 @@ impl Default for AppConfig {
     fn default() -> Self {
         toml::from_str(DEFAULT_CONFIG_TOML).unwrap_or(Self {
             show_apps: true,
+            run_on_startup: false,
+            hotkey: default_hotkey(),
             theme: default_theme(),
             custom_theme: CustomThemeConfig::default(),
             custom_cmd_path: default_cmd_path(),
@@ -147,29 +159,49 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    pub fn load_or_create<P: AsRef<Path>>(path: P) -> Self {
-        let path_ref = path.as_ref();
+    /// Resolves relative config paths (such as `"config.toml"`) next to the executable
+    /// if not found in the current working directory (critical when launched at Windows Startup).
+    pub fn resolve_config_path<P: AsRef<Path>>(path: P) -> PathBuf {
+        let p = path.as_ref();
+        if p.is_absolute() || p.exists() {
+            return p.to_path_buf();
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                return dir.join(p);
+            }
+        }
+        p.to_path_buf()
+    }
 
-        if !path_ref.exists() {
-            let _ = fs::write(path_ref, DEFAULT_CONFIG_TOML);
+    pub fn load_or_create<P: AsRef<Path>>(path: P) -> Self {
+        let resolved = Self::resolve_config_path(path);
+
+        if !resolved.exists() {
+            let _ = fs::write(&resolved, DEFAULT_CONFIG_TOML);
         }
 
         let raw_content =
-            fs::read_to_string(path_ref).unwrap_or_else(|_| DEFAULT_CONFIG_TOML.to_string());
+            fs::read_to_string(&resolved).unwrap_or_else(|_| DEFAULT_CONFIG_TOML.to_string());
 
         let mut parsed: AppConfig = toml::from_str(&raw_content).unwrap_or_default();
         parsed.normalize();
+        crate::system::apply_runtime_system_config(parsed.run_on_startup, &parsed.hotkey);
         parsed
     }
 
     pub fn save<P: AsRef<Path>>(&mut self, path: P) {
         self.normalize();
+        let resolved = Self::resolve_config_path(path);
         if let Ok(serialized) = toml::to_string_pretty(self) {
-            let _ = fs::write(path.as_ref(), serialized);
+            let _ = fs::write(resolved, serialized);
         }
+        crate::system::apply_runtime_system_config(self.run_on_startup, &self.hotkey);
     }
 
     pub fn normalize(&mut self) {
+        self.hotkey = crate::system::normalize_hotkey_str(&self.hotkey);
+
         self.bangs = self
             .bangs
             .drain()

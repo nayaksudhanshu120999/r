@@ -53,11 +53,11 @@ impl ShelfCategory {
 
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Cmds => "Power actions and user-configured custom commands",
-            Self::Settings => "Windows ms-settings URIs and custom system settings",
+            Self::Cmds => "Power actions, inline calculator, and custom commands",
+            Self::Settings => "Windows ms-settings URIs, startup, and hotkey settings",
             Self::Apps => "Start Menu applications enabled in Installed Apps",
-            Self::Files => "Files indexed exclusively from your Custom File Scan paths",
-            Self::Web => "Prefix-free bang shortcuts and fallback web search",
+            Self::Files => "Direct file/folder paths and files from Custom File Scan paths",
+            Self::Web => "Direct URLs, prefix-free bang shortcuts, and fallback web search",
         }
     }
 
@@ -83,6 +83,9 @@ pub enum ExecutionTarget {
     WebUrl(String),
     AppPath(PathBuf),
     FilePath(PathBuf),
+    CopyToClipboard(String),
+    ToggleStartup(bool),
+    SetHotkey(String),
     OpenPaletteSettings,
 }
 

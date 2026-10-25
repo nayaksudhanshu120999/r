@@ -1,13 +1,15 @@
+use crate::config::AppConfig;
 use crate::models::{CandidateItem, ExecutionTarget};
-use std::io;
+use std::io::{self, Write};
 use std::os::windows::process::CommandExt;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const CONFIG_FILE_PATH: &str = "config.toml";
 
 pub fn execute_candidate(
     item: &CandidateItem,
@@ -26,8 +28,36 @@ pub fn execute_candidate(
         ExecutionTarget::AppPath(path) | ExecutionTarget::FilePath(path) => {
             spawn_file_or_app_path(path, run_as_admin)
         }
+        ExecutionTarget::CopyToClipboard(text) => copy_text_to_clipboard(text),
+        ExecutionTarget::ToggleStartup(enable) => {
+            let mut cfg = AppConfig::load_or_create(CONFIG_FILE_PATH);
+            cfg.run_on_startup = *enable;
+            cfg.save(CONFIG_FILE_PATH);
+            crate::system::request_config_reload();
+            Ok(())
+        }
+        ExecutionTarget::SetHotkey(new_hotkey) => {
+            let mut cfg = AppConfig::load_or_create(CONFIG_FILE_PATH);
+            cfg.hotkey = new_hotkey.clone();
+            cfg.save(CONFIG_FILE_PATH);
+            crate::system::request_config_reload();
+            Ok(())
+        }
         ExecutionTarget::OpenPaletteSettings => Ok(()),
     }
+}
+
+fn copy_text_to_clipboard(text: &str) -> io::Result<()> {
+    let mut child = Command::new("clip.exe")
+        .stdin(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    let _ = child.wait();
+    Ok(())
 }
 
 fn spawn_custom_command(
@@ -46,7 +76,6 @@ fn spawn_custom_command(
         custom_cmd_path.trim()
     };
 
-    // If the user gave an existing file path directly, open or run it
     if Path::new(trimmed).exists() {
         return spawn_file_or_app_path(Path::new(trimmed), run_as_admin);
     }
@@ -173,7 +202,6 @@ fn shell_execute_open(target: &str) -> io::Result<()> {
         )
     };
 
-    // ShellExecuteW returns a value greater than 32 on success.
     if (result as isize) <= 32 {
         return Err(io::Error::last_os_error());
     }
@@ -201,10 +229,7 @@ fn spawn_file_or_app_path(path: &Path, run_as_admin: bool) -> io::Result<()> {
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()?;
     } else {
-        Command::new("cmd.exe")
-            .args(["/C", "start", "", &path_str])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()?;
+        shell_execute_open(&path_str)?;
     }
 
     Ok(())
