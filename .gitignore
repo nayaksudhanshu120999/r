@@ -1,0 +1,20 @@
+# Rust / Cargo build artifacts
+/target/
+/dist/
+**/*.rs.bk
+*.pdb
+
+# User runtime notes (keep repo clean while preserving config.toml & EXTENSIONS_GUIDE.md)
+notes.md
+notes.txt
+
+# IDE & Editor folders
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+Thumbs.db
+Desktop.ini
+.DS_Store
