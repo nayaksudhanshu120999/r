@@ -1,5 +1,5 @@
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{c_void, OsStr};
 use std::mem::zeroed;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
@@ -17,7 +17,6 @@ use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
     KEY_SET_VALUE, REG_SZ,
 };
-use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
     MOD_SHIFT, MOD_WIN, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON, VK_SPACE,
@@ -36,6 +35,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW, WS_MAXIMIZEBOX,
     WS_OVERLAPPEDWINDOW, WS_THICKFRAME,
 };
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateMutexW(
+        lp_mutex_attributes: *const c_void,
+        b_initial_owner: i32,
+        lp_name: *const u16,
+    ) -> HANDLE;
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum SystemEvent {
@@ -458,7 +466,6 @@ pub fn force_focus_window_by_title(title: &str) {
     }
 }
 
-/// Zero-allocation 30ms polling check using cached `PALETTE_HWND`.
 pub fn check_outside_click_or_focus_loss(title: &str) -> bool {
     unsafe {
         let hwnd = resolve_own_palette_hwnd(title);

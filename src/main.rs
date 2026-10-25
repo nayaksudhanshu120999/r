@@ -12,7 +12,7 @@ mod system;
 use config::{AppConfig, CustomCommandItem, CustomSettingItem};
 use engine::{QueryEngine, BUILTIN_COMMANDS, BUILTIN_SETTINGS};
 use executor::execute_candidate;
-use indexer::{scan_custom_files, scan_start_menu_apps};
+use indexer::{build_custom_files_index, build_start_menu_index};
 use models::{CandidateItem, ConfigMutation, ExecutionOutcome};
 use notes::open_note_target_file;
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -78,14 +78,38 @@ fn apply_theme_to_windows(
     let is_custom = cfg.theme == "custom";
     let (win_bg, surf_bg, card_bg, sel_bg, border, accent, txt_pri, txt_mut) = if is_custom {
         (
-            parse_hex_color(&cfg.custom_theme.window_bg, Color::from_rgb_u8(0x1f, 0x1f, 0x1f)),
-            parse_hex_color(&cfg.custom_theme.surface_bg, Color::from_rgb_u8(0x2b, 0x2b, 0x2b)),
-            parse_hex_color(&cfg.custom_theme.card_bg, Color::from_rgb_u8(0x28, 0x28, 0x28)),
-            parse_hex_color(&cfg.custom_theme.selected_bg, Color::from_rgb_u8(0x38, 0x38, 0x38)),
-            parse_hex_color(&cfg.custom_theme.border, Color::from_rgb_u8(0x3d, 0x3d, 0x3d)),
-            parse_hex_color(&cfg.custom_theme.accent, Color::from_rgb_u8(0x60, 0xcd, 0xff)),
-            parse_hex_color(&cfg.custom_theme.text_primary, Color::from_rgb_u8(0xff, 0xff, 0xff)),
-            parse_hex_color(&cfg.custom_theme.text_muted, Color::from_rgb_u8(0x9d, 0x9d, 0x9d)),
+            parse_hex_color(
+                &cfg.custom_theme.window_bg,
+                Color::from_rgb_u8(0x1f, 0x1f, 0x1f),
+            ),
+            parse_hex_color(
+                &cfg.custom_theme.surface_bg,
+                Color::from_rgb_u8(0x2b, 0x2b, 0x2b),
+            ),
+            parse_hex_color(
+                &cfg.custom_theme.card_bg,
+                Color::from_rgb_u8(0x28, 0x28, 0x28),
+            ),
+            parse_hex_color(
+                &cfg.custom_theme.selected_bg,
+                Color::from_rgb_u8(0x38, 0x38, 0x38),
+            ),
+            parse_hex_color(
+                &cfg.custom_theme.border,
+                Color::from_rgb_u8(0x3d, 0x3d, 0x3d),
+            ),
+            parse_hex_color(
+                &cfg.custom_theme.accent,
+                Color::from_rgb_u8(0x60, 0xcd, 0xff),
+            ),
+            parse_hex_color(
+                &cfg.custom_theme.text_primary,
+                Color::from_rgb_u8(0xff, 0xff, 0xff),
+            ),
+            parse_hex_color(
+                &cfg.custom_theme.text_muted,
+                Color::from_rgb_u8(0x9d, 0x9d, 0x9d),
+            ),
         )
     } else {
         (
@@ -387,8 +411,8 @@ fn reload_all_indexes(
 ) {
     let cfg = AppConfig::load_or_create(CONFIG_FILE);
     system::apply_runtime_system_config(cfg.run_on_startup, &cfg.hotkey);
-    let apps = scan_start_menu_apps();
-    let custom_files = scan_custom_files(&cfg.custom_file_scan_paths);
+    let apps = build_start_menu_index();
+    let custom_files = build_custom_files_index(&cfg.custom_file_scan_paths);
     apply_theme_to_windows(palette_ui, settings_ui, &cfg);
 
     let is_pal_visible = {
@@ -471,17 +495,16 @@ fn main() -> Result<(), slint::PlatformError> {
     let config = AppConfig::load_or_create(CONFIG_FILE);
     let sys_rx = init_system_integration(config.run_on_startup, &config.hotkey);
 
-    let apps = scan_start_menu_apps();
-    let custom_files = scan_custom_files(&config.custom_file_scan_paths);
+    let apps = build_start_menu_index();
+    let custom_files = build_custom_files_index(&config.custom_file_scan_paths);
     let engine = QueryEngine::new(config.clone(), apps, custom_files);
 
     let palette_ui = PaletteWindow::new()?;
     let settings_ui = SettingsWindow::new()?;
 
-    if let Some(app_icon) = icon::create_slint_window_icon() {
-        palette_ui.set_window_icon(app_icon.clone());
-        settings_ui.set_window_icon(app_icon);
-    }
+    let app_icon = icon::create_slint_app_icon();
+    palette_ui.set_window_icon(app_icon.clone());
+    settings_ui.set_window_icon(app_icon);
 
     apply_theme_to_windows(&palette_ui, &settings_ui, &config);
 
@@ -847,7 +870,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         st.engine.config.custom_file_scan_paths.push(trimmed);
                         st.engine.config.save(CONFIG_FILE);
                         st.engine.custom_files =
-                            scan_custom_files(&st.engine.config.custom_file_scan_paths);
+                            build_custom_files_index(&st.engine.config.custom_file_scan_paths);
                     }
                 }
                 sync_settings_ui(&s_ui, &state_ref);
@@ -867,7 +890,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         st.engine.config.custom_file_scan_paths.remove(idx);
                         st.engine.config.save(CONFIG_FILE);
                         st.engine.custom_files =
-                            scan_custom_files(&st.engine.config.custom_file_scan_paths);
+                            build_custom_files_index(&st.engine.config.custom_file_scan_paths);
                     }
                 }
                 sync_settings_ui(&s_ui, &state_ref);
