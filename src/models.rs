@@ -108,6 +108,7 @@ impl ShelfCategory {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ExtensionActionKind {
     AppendNote {
@@ -136,6 +137,7 @@ pub enum ExtensionActionKind {
     RestoreBuiltinNotepad,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ExecutionTarget {
     SystemProcess {

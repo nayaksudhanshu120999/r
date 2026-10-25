@@ -148,10 +148,4 @@ pub fn build_custom_files_index(custom_paths: &[String]) -> Vec<ScannedFileEntry
     entries
 }
 
-pub fn scan_installed_apps() -> Vec<AppEntry> {
-    build_start_menu_index()
-}
 
-pub fn scan_custom_files(custom_paths: &[String]) -> Vec<ScannedFileEntry> {
-    build_custom_files_index(custom_paths)
-}
