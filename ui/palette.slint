@@ -63,7 +63,7 @@ export component PaletteWindow inherits Window {
     no-frame: true;
     always-on-top: true;
     width: 680px;
-    min-height: 66px;
+    height: root.entries.length == 0 ? 66px : (66px + min(root.entries.length, 9) * 44px + 40px);
 
     in-out property <image> app_icon;
 
@@ -97,8 +97,6 @@ export component PaletteWindow inherits Window {
     public function focus_search_input() {
         search_box.focus();
     }
-
-    height: root.entries.length == 0 ? 66px : (66px + min(root.entries.length, 9) * 44px + 40px);
 
     Rectangle {
         width: 100%;
@@ -261,7 +259,6 @@ export component PaletteWindow inherits Window {
 
             if root.entries.length > 0 : Flickable {
                 vertical-stretch: 1;
-                viewport-height: root.entries.length * 44px;
 
                 VerticalLayout {
                     spacing: 2px;
@@ -650,7 +647,6 @@ export component SettingsWindow inherits Window {
         // TAB 0: General & Theme
         if root.active_tab == 0 : Flickable {
             vertical-stretch: 1;
-            viewport-height: 610px;
 
             VerticalLayout {
                 spacing: 10px;
@@ -1079,7 +1075,6 @@ export component SettingsWindow inherits Window {
 
             Flickable {
                 vertical-stretch: 1;
-                viewport-height: root.category_entries.length * 56px;
 
                 VerticalLayout {
                     spacing: 6px;
@@ -1253,7 +1248,6 @@ export component SettingsWindow inherits Window {
 
             Flickable {
                 height: 185px;
-                viewport-height: root.builtin_cmd_entries.length * 40px;
 
                 VerticalLayout {
                     spacing: 4px;
@@ -1406,7 +1400,6 @@ export component SettingsWindow inherits Window {
 
             Flickable {
                 vertical-stretch: 1;
-                viewport-height: root.custom_commands.length * 40px;
 
                 VerticalLayout {
                     spacing: 4px;
@@ -1536,7 +1529,6 @@ export component SettingsWindow inherits Window {
 
             Flickable {
                 height: 195px;
-                viewport-height: root.builtin_setting_entries.length * 40px;
 
                 VerticalLayout {
                     spacing: 4px;
@@ -1689,7 +1681,6 @@ export component SettingsWindow inherits Window {
 
             Flickable {
                 vertical-stretch: 1;
-                viewport-height: root.custom_settings.length * 40px;
 
                 VerticalLayout {
                     spacing: 4px;
@@ -1798,7 +1789,6 @@ export component SettingsWindow inherits Window {
 
             Flickable {
                 height: 210px;
-                viewport-height: root.app_entries.length * 42px;
 
                 VerticalLayout {
                     spacing: 4px;
@@ -1912,7 +1902,6 @@ export component SettingsWindow inherits Window {
 
             Flickable {
                 vertical-stretch: 1;
-                viewport-height: root.file_scan_paths.length * 40px;
 
                 VerticalLayout {
                     spacing: 4px;
@@ -2321,7 +2310,6 @@ export component SettingsWindow inherits Window {
 
             Flickable {
                 vertical-stretch: 1;
-                viewport-height: root.extension_entries.length * 54px;
 
                 VerticalLayout {
                     spacing: 6px;
@@ -2646,7 +2634,6 @@ export component SettingsWindow inherits Window {
 
             Flickable {
                 vertical-stretch: 1;
-                viewport-height: root.bang_entries.length * 42px;
 
                 VerticalLayout {
                     spacing: 4px;
