@@ -8,12 +8,16 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT,
+    WPARAM,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
     KEY_SET_VALUE, REG_SZ,
 };
+use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
     MOD_SHIFT, MOD_WIN, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON, VK_SPACE,
@@ -23,13 +27,14 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
-    DestroyMenu, DispatchMessageW, FindWindowW, GetCursorPos, GetForegroundWindow, GetMessageW,
-    GetSystemMetrics, GetWindowLongW, GetWindowRect, IsIconic, PostMessageW, PostQuitMessage,
-    RegisterClassW, SetForegroundWindow, SetWindowLongW, ShowWindow, TrackPopupMenu,
-    TranslateMessage, CW_USEDEFAULT, GWL_STYLE, HICON, HMENU, MF_SEPARATOR, MF_STRING, MSG,
-    SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_SHOW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_NONOTIFY,
-    TPM_RETURNCMD, WM_APP, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
-    WNDCLASSW, WS_MAXIMIZEBOX, WS_OVERLAPPEDWINDOW, WS_THICKFRAME,
+    DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowW, GetCursorPos, GetForegroundWindow,
+    GetMessageW, GetSystemMetrics, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId,
+    IsIconic, IsWindow, PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
+    SetWindowLongW, ShowWindow, TrackPopupMenu, TranslateMessage, UnregisterClassW, CW_USEDEFAULT,
+    GWL_STYLE, HICON, HMENU, MF_SEPARATOR, MF_STRING, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE,
+    SW_SHOW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD, WM_APP, WM_DESTROY,
+    WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW, WS_MAXIMIZEBOX,
+    WS_OVERLAPPEDWINDOW, WS_THICKFRAME,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -57,9 +62,14 @@ const IDM_QUIT_APP: usize = 2004;
 
 const HIDDEN_CLASS_NAME: &str = "CmdPalRsTrayHostWindowClass";
 const HIDDEN_WINDOW_TITLE: &str = "CmdPalRsTrayHostWindow";
+const SINGLE_INSTANCE_MUTEX: &str = "Local\\CmdPalRsSingleInstanceMutex";
+
 static EVENT_TX: OnceLock<Mutex<Sender<SystemEvent>>> = OnceLock::new();
 static HOST_HWND: AtomicIsize = AtomicIsize::new(0);
-fn to_wide_null(s: &str) -> Vec<u16> {
+static PALETTE_HWND: AtomicIsize = AtomicIsize::new(0);
+static INSTANCE_MUTEX: AtomicIsize = AtomicIsize::new(0);
+
+pub fn to_wide_null(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(Some(0)).collect()
 }
 
@@ -103,7 +113,7 @@ pub fn parse_hotkey_spec(raw: &str) -> (u32, u32, String) {
         mods |= MOD_CONTROL;
     }
 
-    let mut parts = Vec::new();
+    let mut parts = Vec::with_capacity(5);
     if (mods & MOD_CONTROL) != 0 {
         parts.push("Ctrl".to_string());
     }
@@ -143,26 +153,22 @@ pub fn apply_runtime_system_config(run_on_startup: bool, hotkey: &str) {
     }
 }
 
-pub fn request_config_reload() {
-    let hwnd_val = HOST_HWND.load(Ordering::SeqCst);
-    if hwnd_val != 0 {
-        unsafe {
-            let _ = PostMessageW(hwnd_val as HWND, WM_IPC_RELOAD_CONFIG, 0, 0);
-        }
-    } else {
-        send_event(SystemEvent::ReloadConfig);
-    }
-}
-
 pub fn ensure_single_instance_or_activate_existing() -> bool {
+    let mutex_w = to_wide_null(SINGLE_INSTANCE_MUTEX);
     let class_w = to_wide_null(HIDDEN_CLASS_NAME);
     let title_w = to_wide_null(HIDDEN_WINDOW_TITLE);
+
     unsafe {
-        let existing_hwnd = FindWindowW(class_w.as_ptr(), title_w.as_ptr());
-        if !existing_hwnd.is_null() {
-            let _ = PostMessageW(existing_hwnd, WM_IPC_SHOW_PALETTE, 0, 0);
+        let hmutex = CreateMutexW(null(), 1, mutex_w.as_ptr());
+        if !hmutex.is_null() && GetLastError() == ERROR_ALREADY_EXISTS {
+            let _ = CloseHandle(hmutex);
+            let existing_hwnd = FindWindowW(class_w.as_ptr(), title_w.as_ptr());
+            if !existing_hwnd.is_null() {
+                let _ = PostMessageW(existing_hwnd, WM_IPC_SHOW_PALETTE, 0, 0);
+            }
             return false;
         }
+        INSTANCE_MUTEX.store(hmutex as isize, Ordering::SeqCst);
     }
     true
 }
@@ -172,6 +178,12 @@ pub fn shutdown_system_integration() {
     if hwnd_val != 0 {
         unsafe {
             let _ = PostMessageW(hwnd_val as HWND, WM_IPC_SHUTDOWN, 0, 0);
+        }
+    }
+    let hmutex = INSTANCE_MUTEX.swap(0, Ordering::SeqCst);
+    if hmutex != 0 {
+        unsafe {
+            let _ = CloseHandle(hmutex as HANDLE);
         }
     }
 }
@@ -245,7 +257,7 @@ pub fn init_system_integration(run_on_startup: bool, hotkey: &str) -> Receiver<S
         let mut msg: MSG = zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
             let _ = TranslateMessage(&msg);
-            let _ = DispatchMessageW(&msg);
+            DispatchMessageW(&msg);
         }
 
         let _ = UnregisterHotKey(hwnd, HOTKEY_ID);
@@ -253,6 +265,8 @@ pub fn init_system_integration(run_on_startup: bool, hotkey: &str) -> Receiver<S
         if !hicon.is_null() {
             let _ = DestroyIcon(hicon);
         }
+        let _ = DestroyWindow(hwnd);
+        let _ = UnregisterClassW(class_w.as_ptr(), hinstance);
     });
 
     rx
@@ -289,8 +303,8 @@ unsafe extern "system" fn tray_host_wnd_proc(
             0
         }
         WM_TRAYICON => {
-            let event_code = (lparam as u32) & 0xFFFF;
-            match event_code {
+            let mouse_msg = (lparam & 0xFFFF) as u32;
+            match mouse_msg {
                 WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
                     send_event(SystemEvent::TogglePalette);
                 }
@@ -315,16 +329,16 @@ unsafe fn show_tray_context_menu(hwnd: HWND) {
         return;
     }
 
-    let lbl_open = to_wide_null("Open Command Palette");
-    let lbl_settings = to_wide_null("Command Palette Settings");
-    let lbl_reload = to_wide_null("Reload Config & Extensions");
-    let lbl_quit = to_wide_null("Exit Command Palette");
+    let open_pal = to_wide_null("Open Command Palette");
+    let open_set = to_wide_null("Settings...");
+    let reload_cfg = to_wide_null("Reload Config & Rescan");
+    let quit_app = to_wide_null("Exit Command Palette");
 
-    let _ = AppendMenuW(hmenu, MF_STRING, IDM_OPEN_PALETTE, lbl_open.as_ptr());
-    let _ = AppendMenuW(hmenu, MF_STRING, IDM_OPEN_SETTINGS, lbl_settings.as_ptr());
-    let _ = AppendMenuW(hmenu, MF_STRING, IDM_RELOAD_CONFIG, lbl_reload.as_ptr());
+    let _ = AppendMenuW(hmenu, MF_STRING, IDM_OPEN_PALETTE, open_pal.as_ptr());
+    let _ = AppendMenuW(hmenu, MF_STRING, IDM_OPEN_SETTINGS, open_set.as_ptr());
+    let _ = AppendMenuW(hmenu, MF_STRING, IDM_RELOAD_CONFIG, reload_cfg.as_ptr());
     let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, null());
-    let _ = AppendMenuW(hmenu, MF_STRING, IDM_QUIT_APP, lbl_quit.as_ptr());
+    let _ = AppendMenuW(hmenu, MF_STRING, IDM_QUIT_APP, quit_app.as_ptr());
 
     let mut pt: POINT = zeroed();
     let _ = GetCursorPos(&mut pt);
@@ -332,17 +346,17 @@ unsafe fn show_tray_context_menu(hwnd: HWND) {
 
     let cmd = TrackPopupMenu(
         hmenu,
-        TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+        TPM_RETURNCMD | TPM_NONOTIFY | TPM_BOTTOMALIGN | TPM_LEFTALIGN,
         pt.x,
         pt.y,
         0,
         hwnd,
         null(),
-    ) as usize;
+    );
 
     let _ = DestroyMenu(hmenu);
 
-    match cmd {
+    match cmd as usize {
         IDM_OPEN_PALETTE => send_event(SystemEvent::ShowPalette),
         IDM_OPEN_SETTINGS => send_event(SystemEvent::OpenSettings),
         IDM_RELOAD_CONFIG => send_event(SystemEvent::ReloadConfig),
@@ -351,49 +365,88 @@ unsafe fn show_tray_context_menu(hwnd: HWND) {
     }
 }
 
-fn sync_windows_startup_registry(enable: bool) {
-    let subkey = to_wide_null(r"Software\Microsoft\Windows\CurrentVersion\Run");
-    let value_name = to_wide_null("CmdPalRs");
+pub fn sync_windows_startup_registry(enable: bool) {
+    let subkey = to_wide_null("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    let val_name = to_wide_null("CmdPalRs");
 
     unsafe {
         let mut hkey: HKEY = null_mut();
-        if RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            subkey.as_ptr(),
-            0,
-            KEY_SET_VALUE,
-            &mut hkey,
-        ) != 0
-        {
+        let status = RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_SET_VALUE, &mut hkey);
+        if status != 0 || hkey.is_null() {
             return;
         }
 
         if enable {
             if let Ok(exe_path) = env::current_exe() {
                 let quoted = format!("\"{}\"", exe_path.to_string_lossy());
-                let wide_val = to_wide_null(&quoted);
-                let byte_len = (wide_val.len() * 2) as u32;
+                let data_w = to_wide_null(&quoted);
+                let byte_len = (data_w.len() * 2) as u32;
                 let _ = RegSetValueExW(
                     hkey,
-                    value_name.as_ptr(),
+                    val_name.as_ptr(),
                     0,
                     REG_SZ,
-                    wide_val.as_ptr() as *const u8,
+                    data_w.as_ptr() as *const u8,
                     byte_len,
                 );
             }
         } else {
-            let _ = RegDeleteValueW(hkey, value_name.as_ptr());
+            let _ = RegDeleteValueW(hkey, val_name.as_ptr());
         }
 
         let _ = RegCloseKey(hkey);
     }
 }
 
-pub fn activate_window_by_title(title: &str) {
+pub fn get_centered_palette_coords(win_w: i32, win_h: i32) -> (i32, i32) {
+    unsafe {
+        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+        let x = ((screen_w - win_w) / 2).max(0);
+        let y = ((screen_h - win_h) / 4).max(40);
+        (x, y)
+    }
+}
+
+pub fn lock_window_resize_by_title(title: &str) {
     let title_w = to_wide_null(title);
     unsafe {
         let hwnd = FindWindowW(null(), title_w.as_ptr());
+        if !hwnd.is_null() {
+            let style = GetWindowLongW(hwnd, GWL_STYLE);
+            let new_style = style & !(WS_THICKFRAME as i32) & !(WS_MAXIMIZEBOX as i32);
+            let _ = SetWindowLongW(hwnd, GWL_STYLE, new_style);
+        }
+    }
+}
+
+unsafe fn resolve_own_palette_hwnd(title: &str) -> HWND {
+    let cached = PALETTE_HWND.load(Ordering::Relaxed) as HWND;
+    if !cached.is_null() && IsWindow(cached) != 0 {
+        return cached;
+    }
+
+    let title_w = to_wide_null(title);
+    let hwnd = FindWindowW(null(), title_w.as_ptr());
+    if !hwnd.is_null() {
+        let mut pid: u32 = 0;
+        let _ = GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == std::process::id() {
+            PALETTE_HWND.store(hwnd as isize, Ordering::Relaxed);
+            return hwnd;
+        }
+    }
+    null_mut()
+}
+
+pub fn force_focus_window_by_title(title: &str) {
+    unsafe {
+        let hwnd = if title == "Command Palette" {
+            resolve_own_palette_hwnd(title)
+        } else {
+            let title_w = to_wide_null(title);
+            FindWindowW(null(), title_w.as_ptr())
+        };
         if !hwnd.is_null() {
             if IsIconic(hwnd) != 0 {
                 let _ = ShowWindow(hwnd, SW_RESTORE);
@@ -405,30 +458,10 @@ pub fn activate_window_by_title(title: &str) {
     }
 }
 
-pub fn enable_window_maximize(title: &str) {
-    let title_w = to_wide_null(title);
+/// Zero-allocation 30ms polling check using cached `PALETTE_HWND`.
+pub fn check_outside_click_or_focus_loss(title: &str) -> bool {
     unsafe {
-        let hwnd = FindWindowW(null(), title_w.as_ptr());
-        if !hwnd.is_null() {
-            let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-            let new_style = style | WS_MAXIMIZEBOX | WS_THICKFRAME;
-            let _ = SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
-        }
-    }
-}
-
-pub fn primary_screen_size() -> (i32, i32) {
-    unsafe {
-        let w = GetSystemMetrics(SM_CXSCREEN);
-        let h = GetSystemMetrics(SM_CYSCREEN);
-        (w.max(800), h.max(600))
-    }
-}
-
-pub fn check_outside_click_or_focus_loss(palette_title: &str) -> bool {
-    let title_w = to_wide_null(palette_title);
-    unsafe {
-        let hwnd = FindWindowW(null(), title_w.as_ptr());
+        let hwnd = resolve_own_palette_hwnd(title);
         if hwnd.is_null() {
             return false;
         }
@@ -438,11 +471,11 @@ pub fn check_outside_click_or_focus_loss(palette_title: &str) -> bool {
             return true;
         }
 
-        let mouse_down = (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0
-            || (GetAsyncKeyState(VK_RBUTTON as i32) as u16 & 0x8000) != 0
-            || (GetAsyncKeyState(VK_MBUTTON as i32) as u16 & 0x8000) != 0;
+        let l_down = (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0;
+        let r_down = (GetAsyncKeyState(VK_RBUTTON as i32) as u16 & 0x8000) != 0;
+        let m_down = (GetAsyncKeyState(VK_MBUTTON as i32) as u16 & 0x8000) != 0;
 
-        if mouse_down {
+        if l_down || r_down || m_down {
             let mut pt: POINT = zeroed();
             let mut rect: RECT = zeroed();
             if GetCursorPos(&mut pt) != 0 && GetWindowRect(hwnd, &mut rect) != 0 {

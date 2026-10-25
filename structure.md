@@ -6,7 +6,6 @@ cmdpal-rs/
 ├── Cargo.toml                 # Rust package & dependency configuration
 ├── build.rs                   # Slint UI compiler & procedural Windows .ico generator
 ├── config.toml                # Default runtime configuration, bangs & extensions
-├── EXTENSIONS_GUIDE.md        # Step-by-step Extensions & Notepad guide (also embedded in exe)
 ├── README.md                  # Project documentation
 ├── ui/
 │   └── palette.slint          # Slint UI for PaletteWindow & 7-tab SettingsWindow
@@ -14,7 +13,7 @@ cmdpal-rs/
     ├── main.rs                # Application entry point, UI state sync & event loop
     ├── models.rs              # Core data structures, ShelfCategory & ExecutionOutcome
     ├── config.rs              # TOML config loader, normalizer & persistence helpers
-    ├── extensions.rs          # Pluggable Extension Engine, Notepad ('note') & Guide manager
+    ├── notes.rs               # Notes plugin
     ├── indexer.rs             # Start Menu (.lnk) & custom directory file scanner
     ├── engine.rs              # 7-tier smart ranking engine, calculator & bang parser
     ├── executor.rs            # Process/URI/Admin launcher & clipboard integration

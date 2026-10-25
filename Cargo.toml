@@ -1,6 +1,6 @@
 [package]
 name = "cmdpal-rs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 build = "build.rs"
 
@@ -18,7 +18,9 @@ walkdir = "2.5"
 urlencoding = "2.1"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_System_DataExchange",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",

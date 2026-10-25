@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShelfCategory {
-    Extensions,
+    Notes,
     CmdPal,
     Cmds,
     Settings,
@@ -12,9 +12,9 @@ pub enum ShelfCategory {
 }
 
 impl ShelfCategory {
-    pub fn all_default_order() -> [Self; 7] {
-        [
-            Self::Extensions,
+    pub fn all_default_order() -> Vec<Self> {
+        vec![
+            Self::Notes,
             Self::CmdPal,
             Self::Cmds,
             Self::Settings,
@@ -24,22 +24,22 @@ impl ShelfCategory {
         ]
     }
 
-    pub fn from_label(label: &str) -> Self {
-        match label.trim().to_ascii_lowercase().as_str() {
-            "extensions" | "extension" | "ext" | "plugins" => Self::Extensions,
-            "cmdpal" | "palette" | "cmdpal_settings" | "palettesettings" => Self::CmdPal,
-            "cmds" | "cmd" | "commands" | "command" => Self::Cmds,
-            "settings" | "setting" | "system_settings" => Self::Settings,
-            "apps" | "app" | "applications" => Self::Apps,
-            "files" | "file" => Self::Files,
-            "web" | "bang" | "search" => Self::Web,
-            _ => Self::Apps,
+    pub fn from_label(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "notes" | "note" | "notepad" | "extensions" | "ext" => Some(Self::Notes),
+            "cmdpal" | "palette" | "cmdpal_settings" => Some(Self::CmdPal),
+            "cmds" | "cmd" | "commands" | "system" => Some(Self::Cmds),
+            "settings" | "setting" | "winsettings" | "windows_settings" => Some(Self::Settings),
+            "apps" | "app" | "applications" => Some(Self::Apps),
+            "files" | "file" | "customfiles" => Some(Self::Files),
+            "web" | "search" | "browser" => Some(Self::Web),
+            _ => None,
         }
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Extensions => "Extensions",
+            Self::Notes => "Notes",
             Self::CmdPal => "CmdPal",
             Self::Cmds => "Cmds",
             Self::Settings => "Settings",
@@ -51,53 +51,43 @@ impl ShelfCategory {
 
     pub fn header_title(&self) -> &'static str {
         match self {
-            Self::Extensions => "EXTENSIONS & PLUGINS",
-            Self::CmdPal => "CMDPAL SETTINGS & ACTIONS",
+            Self::Notes => "NOTES & TEXT FILES",
+            Self::CmdPal => "PALETTE ACTIONS",
             Self::Cmds => "SYSTEM COMMANDS",
-            Self::Settings => "WINDOWS SYSTEM SETTINGS",
+            Self::Settings => "WINDOWS SETTINGS",
             Self::Apps => "APPLICATIONS",
-            Self::Files => "CUSTOM FILES",
+            Self::Files => "FILES & FOLDERS",
             Self::Web => "WEB SEARCH",
         }
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::Extensions => "Extensions (Notepad, Custom Bangs)",
-            Self::CmdPal => "CmdPal Own Settings & Controls",
-            Self::Cmds => "System Commands & Calculator",
-            Self::Settings => "Windows System Settings (ms-settings)",
-            Self::Apps => "Installed Applications",
-            Self::Files => "Custom Scanned Files",
-            Self::Web => "Web Search & Bangs",
+            Self::Notes => "Notes (Note Bangs)",
+            Self::CmdPal => "Palette Actions",
+            Self::Cmds => "System Commands",
+            Self::Settings => "Windows Settings",
+            Self::Apps => "Applications",
+            Self::Files => "Custom Files",
+            Self::Web => "Web Search",
         }
     }
 
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Extensions => {
-                "Modular extensions such as Quick Notepad ('note' bang) and custom plugins"
-            }
-            Self::CmdPal => {
-                "Command Palette preferences, theme, hotkey, startup, and search engine"
-            }
-            Self::Cmds => {
-                "Inbuilt Windows admin/power commands, calculator, and custom shell commands"
-            }
-            Self::Settings => {
-                "Inbuilt Windows ms-settings URIs and custom control panel shortcuts"
-            }
-            Self::Apps => "Start Menu applications enabled in Installed Apps",
-            Self::Files => "Direct file/folder paths and files from Custom File Scan paths",
-            Self::Web => {
-                "Direct URLs, prefix-free bang shortcuts, and fallback default search engine"
-            }
+            Self::Notes => "Quick note bangs mapped to .txt and .md files",
+            Self::CmdPal => "Command Palette preferences, theme, hotkey & index reload",
+            Self::Cmds => "Built-in Windows admin tools, calculator & custom shell commands",
+            Self::Settings => "Windows ms-settings: pages & Control Panel shortcuts",
+            Self::Apps => "Installed Start Menu applications",
+            Self::Files => "Direct file paths & files from custom scan folders",
+            Self::Web => "Web search bangs, URLs & fallback search engine",
         }
     }
 
     pub fn icon_glyph(&self) -> &'static str {
         match self {
-            Self::Extensions => "🧩",
+            Self::Notes => "📝",
             Self::CmdPal => "🎛",
             Self::Cmds => "⚡",
             Self::Settings => "⚙",
@@ -108,36 +98,34 @@ impl ShelfCategory {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub enum ExtensionActionKind {
-    AppendNote {
+pub enum NoteActionKind {
+    AppendLine {
         file_path: PathBuf,
         content: String,
         with_timestamp: bool,
     },
-    OverwriteNote {
+    OverwriteFile {
         file_path: PathBuf,
         content: String,
     },
-    DeleteNoteLine {
+    DeleteLine {
         file_path: PathBuf,
         line_index: usize,
     },
-    ClearNoteFile {
+    ClearFile {
         file_path: PathBuf,
     },
-    ToggleExtension {
-        id: String,
-        enable: bool,
-    },
-    RemoveExtension {
-        id: String,
-    },
-    RestoreBuiltinNotepad,
 }
 
-#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub enum ConfigMutation {
+    ToggleStartup(bool),
+    SetHotkey(String),
+    SetDefaultSearchEngine(String),
+    SwitchTheme(String),
+}
+
 #[derive(Debug, Clone)]
 pub enum ExecutionTarget {
     SystemProcess {
@@ -150,27 +138,24 @@ pub enum ExecutionTarget {
     AppPath(PathBuf),
     FilePath(PathBuf),
     CopyToClipboard(String),
-    ToggleStartup(bool),
-    SetHotkey(String),
-    SetDefaultSearchEngine(String),
-    SwitchTheme(String),
+    MutateConfig(ConfigMutation),
     ReloadIndex,
-    OpenPaletteSettings,
     OpenPaletteSettingsTab(i32),
     ActivateBang {
         bang: String,
         label: String,
     },
-    ExtensionAction(ExtensionActionKind),
+    NoteAction(NoteActionKind),
     NoOp,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ExecutionOutcome {
     HidePalette,
     KeepOpenAndRefresh { clear_query: bool },
     ActivateBang { bang: String, label: String },
     OpenSettingsTab(i32),
+    ApplyConfigMutation(ConfigMutation),
     ReloadAll,
 }
 

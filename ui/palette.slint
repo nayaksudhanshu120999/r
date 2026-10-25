@@ -1,17 +1,29 @@
+import { ScrollView } from "std-widgets.slint";
+
 export struct PaletteEntry {
-    is_header: bool,
-    candidate_index: int,
     title: string,
     subtitle: string,
     badge: string,
+    category: string,
+    section_header: string,
     icon: string,
     can_elevate: bool,
+}
+
+export struct CategoryEntry {
+    rank: int,
+    id: string,
+    label: string,
+    description: string,
+    icon: string,
+    is_first: bool,
+    is_last: bool,
 }
 
 export struct AppToggleEntry {
     name: string,
     path: string,
-    enabled: bool,
+    visible: bool,
 }
 
 export struct BuiltinToggleEntry {
@@ -31,183 +43,340 @@ export struct CustomSettingEntry {
     path: string,
 }
 
-export struct BangRuleEntry {
+export struct BangEntry {
     trigger: string,
-    url_template: string,
+    url: string,
 }
 
-export struct CategoryOrderEntry {
-    id: string,
-    display_name: string,
-    description: string,
-    icon: string,
-}
-
-export struct ExtensionUiEntry {
-    id: string,
-    name: string,
-    description: string,
+export struct NoteBangEntry {
     bang: string,
-    icon: string,
-    kind: string,
-    target_file: string,
-    target_meta: string,
-    is_file_backed: bool,
-    enabled: bool,
-    is_builtin: bool,
+    name: string,
+    file_path: string,
 }
 
+// ============================================================================
+// SHARED MINIMAL UI PRIMITIVES (Consistent across Palette & Settings)
+// ============================================================================
+component FlatInput inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <color> surface-bg: #262626;
+    in property <color> border-col: #363636;
+    in property <color> accent: #60cdff;
+    in property <color> text-primary: #f5f5f5;
+    in property <color> text-muted: #9a9a9a;
+    callback edited(string);
+    callback accepted();
+
+    height: 32px;
+    border-radius: 6px;
+    background: surface-bg;
+    border-width: 1px;
+    border-color: input-el.has-focus ? accent : border-col;
+
+    Text {
+        x: 10px;
+        width: parent.width - 20px;
+        height: 100%;
+        text: root.placeholder;
+        color: root.text-muted;
+        font-size: 12px;
+        vertical-alignment: center;
+        visible: root.text == "";
+        overflow: elide;
+    }
+
+    input-el := TextInput {
+        x: 10px;
+        width: parent.width - 20px;
+        height: 100%;
+        text <=> root.text;
+        color: root.text-primary;
+        font-size: 12px;
+        vertical-alignment: center;
+        single-line: true;
+        edited => { root.edited(self.text); }
+        accepted => { root.accepted(); }
+    }
+}
+
+component ActionBtn inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <color> accent: #60cdff;
+    in property <color> surface-bg: #262626;
+    in property <color> selected-bg: #323232;
+    in property <color> border-col: #363636;
+    in property <color> text-primary: #f5f5f5;
+    callback clicked();
+
+    height: 30px;
+    min-width: 68px;
+    border-radius: 6px;
+    border-width: primary ? 0px : 1px;
+    border-color: danger ? #5a2a2a : border-col;
+    background: primary ? (ta.has-hover ? accent.brighter(0.12) : accent) :
+                danger ? (ta.has-hover ? #4d2222 : #331a1a) :
+                (ta.has-hover ? selected-bg : surface-bg);
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        alignment: center;
+        Text {
+            text: root.label;
+            font-size: 11.5px;
+            font-weight: 600;
+            color: root.primary ? #101010 : (root.danger ? #ff9999 : root.text-primary);
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component PillSwitch inherits Rectangle {
+    in property <bool> checked: false;
+    in property <color> accent: #60cdff;
+    in property <color> surface-bg: #262626;
+    in property <color> border-col: #363636;
+    callback toggled(bool);
+
+    width: 38px;
+    height: 20px;
+    border-radius: 10px;
+    background: checked ? accent : surface-bg;
+    border-width: 1px;
+    border-color: checked ? accent : border-col;
+
+    Rectangle {
+        x: root.checked ? 20px : 2px;
+        y: 2px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: root.checked ? #101010 : #b5b5b5;
+        animate x { duration: 110ms; easing: ease-out; }
+    }
+
+    TouchArea {
+        clicked => { root.toggled(!root.checked); }
+    }
+}
+
+component SettingCard inherits Rectangle {
+    in property <color> card-bg: #242424;
+    in property <color> border-col: #363636;
+
+    border-radius: 8px;
+    background: card-bg;
+    border-width: 1px;
+    border-color: border-col;
+}
+
+component SidebarNavItem inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> active: false;
+    in property <color> accent: #60cdff;
+    in property <color> selected-bg: #323232;
+    in property <color> text-primary: #f5f5f5;
+    in property <color> text-muted: #9a9a9a;
+    callback clicked();
+
+    height: 34px;
+    border-radius: 6px;
+    background: active ? selected-bg : (ta.has-hover ? selected-bg.darker(0.2) : transparent);
+
+    Rectangle {
+        x: 0px;
+        y: 8px;
+        width: 3px;
+        height: parent.height - 16px;
+        border-radius: 1.5px;
+        background: root.active ? root.accent : transparent;
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 10px;
+        spacing: 9px;
+        alignment: start;
+
+        Text {
+            text: root.icon;
+            font-size: 13px;
+            color: root.active ? root.accent : root.text-muted;
+            vertical-alignment: center;
+            width: 18px;
+        }
+
+        Text {
+            text: root.label;
+            font-size: 12.5px;
+            font-weight: root.active ? 600 : 400;
+            color: root.active ? root.text-primary : root.text-muted;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// ============================================================================
+// MAIN COMMAND PALETTE WINDOW
+// ============================================================================
 export component PaletteWindow inherits Window {
     title: "Command Palette";
-    icon: root.app_icon;
     no-frame: true;
     always-on-top: true;
     width: 680px;
+    height: 440px;
+    min-width: 680px;
+    max-width: 680px;
+    min-height: 440px;
+    max-height: 440px;
+    background: transparent;
 
-    in-out property <image> app_icon;
+    in property <image> window_icon;
+    icon: root.window_icon;
 
-    in property <color> theme_window_bg: #1f1f1f;
-    in property <color> theme_surface_bg: #2b2b2b;
-    in property <color> theme_card_bg: #282828;
-    in property <color> theme_selected_bg: #383838;
-    in property <color> theme_border: #3d3d3d;
+    in property <color> theme_window_bg: #1e1e1e;
+    in property <color> theme_surface_bg: #262626;
+    in property <color> theme_card_bg: #242424;
+    in property <color> theme_selected_bg: #323232;
+    in property <color> theme_border: #363636;
     in property <color> theme_accent: #60cdff;
-    in property <color> theme_text_primary: #ffffff;
-    in property <color> theme_text_muted: #9d9d9d;
+    in property <color> theme_text_primary: #f5f5f5;
+    in property <color> theme_text_muted: #9a9a9a;
 
-    background: root.theme_window_bg;
-    default-font-family: "Segoe UI Variable Display";
-
-    in-out property <string> query_text: "";
+    in-out property <string> search_text: "";
     in-out property <string> active_bang: "";
     in-out property <string> active_bang_label: "";
     in-out property <[PaletteEntry]> entries: [];
-    in-out property <int> selected_candidate_index: 0;
-    in-out property <int> total_candidates: 0;
+    in-out property <int> selected_index: 0;
 
-    callback query_edited(string);
+    callback query_changed(string);
     callback clear_active_bang();
     callback move_selection(int);
-    callback trigger_selected(bool);
-    callback trigger_candidate_at(int, bool);
-    callback open_settings_window();
-    callback hide_requested();
+    callback activate_selected(bool);
+    callback activate_index(int, bool);
+    callback close_palette();
+    callback open_settings();
 
-    public function focus_search_input() {
-        search_box.focus();
+    public function focus_input() {
+        search-input.focus();
     }
 
     Rectangle {
         width: 100%;
         height: 100%;
         background: root.theme_window_bg;
-        border-color: root.theme_border;
-        border-width: 1px;
         border-radius: 10px;
+        border-width: 1px;
+        border-color: root.theme_border;
         clip: true;
 
         VerticalLayout {
-            padding: 10px;
-            spacing: 6px;
+            padding: 12px;
+            spacing: 8px;
 
+            // Search Bar
             Rectangle {
                 height: 44px;
                 background: root.theme_surface_bg;
-                border-color: search_box.has-focus ? root.theme_accent : root.theme_border;
-                border-width: search_box.has-focus ? 2px : 1px;
-                border-radius: 8px;
+                border-radius: 7px;
+                border-width: 1px;
+                border-color: search-input.has-focus ? root.theme_accent : root.theme_border;
 
                 HorizontalLayout {
-                    padding-left: 14px;
+                    padding-left: 12px;
                     padding-right: 10px;
-                    spacing: 10px;
+                    spacing: 8px;
+                    alignment: center;
 
                     Text {
-                        text: "\u{E721}";
-                        font-family: "Segoe Fluent Icons";
-                        color: search_box.has-focus ? root.theme_accent : root.theme_text_muted;
+                        text: "⌕";
                         font-size: 16px;
+                        color: root.theme_accent;
                         vertical-alignment: center;
+                        width: 18px;
                     }
 
+                    // Active Bang Chip (Note bang or Web bang)
                     if root.active_bang != "" : Rectangle {
-                        height: 26px;
-                        width: bang_chip_layout.preferred-width + 16px;
-                        y: (parent.height - self.height) / 2;
-                        background: root.theme_accent;
-                        border-radius: 6px;
+                        height: 24px;
+                        width: bang-chip-layout.preferred-width + 14px;
+                        border-radius: 5px;
+                        background: root.theme_accent.with-alpha(0.16);
+                        border-width: 1px;
+                        border-color: root.theme_accent;
 
-                        bang_chip_layout := HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
+                        bang-chip-layout := HorizontalLayout {
+                            padding-left: 7px;
+                            padding-right: 7px;
                             spacing: 5px;
+                            alignment: center;
 
                             Text {
-                                text: root.active_bang_label != "" ? root.active_bang_label : root.active_bang;
-                                color: #121212;
+                                text: root.active_bang_label;
+                                color: root.theme_accent;
                                 font-size: 11px;
-                                font-weight: 800;
+                                font-weight: 700;
                                 vertical-alignment: center;
                             }
 
                             Text {
                                 text: "✕";
-                                color: #1f1f1f;
+                                color: root.theme_text_muted;
                                 font-size: 10px;
-                                font-weight: 700;
                                 vertical-alignment: center;
                             }
                         }
 
                         TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.clear_active_bang();
-                                search_box.focus();
-                            }
+                            clicked => { root.clear_active_bang(); }
                         }
                     }
 
                     Rectangle {
                         horizontal-stretch: 1;
-                        background: transparent;
+                        height: 100%;
 
                         Text {
-                            visible: root.query_text == "";
-                            text: root.active_bang == "note"
-                                ? "Type note text & hit Enter to save to file, or browse saved lines below..."
-                                : (root.active_bang != ""
-                                    ? "Type query for [" + root.active_bang + "] (Backspace to clear chip)..."
-                                    : "Type an app, 'note ' for notepad, 'settings', math (24*7), or web search...");
-                            color: root.theme_text_muted;
-                            font-size: 14px;
-                            vertical-alignment: center;
-                        }
-
-                        search_box := TextInput {
                             width: 100%;
                             height: 100%;
-                            text <=> root.query_text;
+                            text: root.active_bang != "" ?
+                                  "Type text & press Enter (or filter lines)..." :
+                                  "Search apps, commands, math, or type a bang (note, todo, yt, g)...";
+                            color: root.theme_text_muted;
+                            font-size: 13.5px;
+                            vertical-alignment: center;
+                            visible: root.search_text == "";
+                            overflow: elide;
+                        }
+
+                        search-input := TextInput {
+                            width: 100%;
+                            height: 100%;
+                            text <=> root.search_text;
+                            font-size: 14px;
                             color: root.theme_text_primary;
-                            font-size: 15px;
                             vertical-alignment: center;
                             single-line: true;
 
                             edited => {
-                                root.query_edited(self.text);
+                                root.query_changed(self.text);
                             }
 
                             key-pressed(event) => {
                                 if (event.text == Key.Backspace && self.text == "" && root.active_bang != "") {
                                     root.clear_active_bang();
-                                    return accept;
-                                }
-                                if (event.text == Key.Escape) {
-                                    if (root.active_bang != "" && self.text == "") {
-                                        root.clear_active_bang();
-                                        return accept;
-                                    }
-                                    root.hide_requested();
                                     return accept;
                                 }
                                 if (event.text == Key.DownArrow) {
@@ -218,12 +387,20 @@ export component PaletteWindow inherits Window {
                                     root.move_selection(-1);
                                     return accept;
                                 }
-                                if (event.text == "," && event.modifiers.control) {
-                                    root.open_settings_window();
+                                if (event.text == Key.Return) {
+                                    root.activate_selected(event.modifiers.control && event.modifiers.shift);
                                     return accept;
                                 }
-                                if (event.text == Key.Return) {
-                                    root.trigger_selected(event.modifiers.control && event.modifiers.shift);
+                                if (event.text == Key.Escape) {
+                                    if (root.active_bang != "") {
+                                        root.clear_active_bang();
+                                    } else {
+                                        root.close_palette();
+                                    }
+                                    return accept;
+                                }
+                                if (event.modifiers.control && event.text == ",") {
+                                    root.open_settings();
                                     return accept;
                                 }
                                 return reject;
@@ -232,181 +409,220 @@ export component PaletteWindow inherits Window {
                     }
 
                     Rectangle {
-                        width: 30px;
-                        height: 30px;
-                        y: (parent.height - self.height) / 2;
-                        border-radius: 6px;
-                        background: gear_touch.has-hover ? root.theme_selected_bg : transparent;
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 5px;
+                        background: gear-ta.has-hover ? root.theme_selected_bg : transparent;
 
                         Text {
                             text: "⚙";
-                            color: gear_touch.has-hover ? root.theme_accent : root.theme_text_muted;
-                            font-size: 15px;
+                            font-size: 14px;
+                            color: root.theme_text_muted;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
 
-                        gear_touch := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.open_settings_window();
-                            }
+                        gear-ta := TouchArea {
+                            clicked => { root.open_settings(); }
                         }
                     }
                 }
             }
 
-            if root.entries.length > 0 : Flickable {
+            // Results Shelf Area
+            Rectangle {
                 vertical-stretch: 1;
+                background: transparent;
+                clip: true;
 
-                VerticalLayout {
-                    spacing: 2px;
+                if root.entries.length == 0 : VerticalLayout {
+                    alignment: center;
+                    spacing: 6px;
 
-                    for entry in root.entries : Rectangle {
-                        height: entry.is_header ? 28px : 42px;
-                        border-radius: 6px;
-                        background: entry.is_header
-                            ? transparent
-                            : (entry.candidate_index == root.selected_candidate_index
-                                ? root.theme_selected_bg
-                                : (row_touch.has-hover ? root.theme_card_bg : transparent));
+                    Text {
+                        text: root.search_text == "" ? "Ready when you are" : "No matching results";
+                        font-size: 13.5px;
+                        font-weight: 600;
+                        color: root.theme_text_primary;
+                        horizontal-alignment: center;
+                    }
 
-                        Rectangle {
-                            visible: !entry.is_header && entry.candidate_index == root.selected_candidate_index;
-                            x: 0px;
-                            y: 9px;
-                            width: 3px;
-                            height: 24px;
-                            border-radius: 2px;
-                            background: root.theme_accent;
-                        }
+                    Text {
+                        text: "Try 'note ', 'todo ', 'g ', '24*7', 'tm', or press Ctrl+, for Settings";
+                        font-size: 11.5px;
+                        color: root.theme_text_muted;
+                        horizontal-alignment: center;
+                    }
+                }
 
-                        HorizontalLayout {
-                            padding-left: entry.is_header ? 8px : 12px;
-                            padding-right: 12px;
-                            spacing: 10px;
+                if root.entries.length > 0 : ScrollView {
+                    width: 100%;
+                    height: 100%;
+                    viewport-height: root.entries.length * 52px;
 
-                            if !entry.is_header : Rectangle {
-                                width: 26px;
-                                height: 26px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 5px;
-                                background: entry.candidate_index == root.selected_candidate_index
-                                    ? root.theme_surface_bg
-                                    : root.theme_card_bg;
-                                border-color: root.theme_border;
-                                border-width: 1px;
+                    VerticalLayout {
+                        spacing: 3px;
+                        padding-right: 4px;
 
-                                Text {
-                                    text: entry.icon;
-                                    font-size: 13px;
-                                    color: entry.candidate_index == root.selected_candidate_index
-                                        ? root.theme_accent
-                                        : root.theme_text_primary;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                            }
+                        for item[idx] in root.entries : VerticalLayout {
+                            spacing: 2px;
 
-                            if entry.is_header : Text {
-                                text: entry.icon + "  " + entry.title;
-                                color: root.theme_accent;
-                                font-size: 11px;
-                                font-weight: 700;
-                                vertical-alignment: bottom;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                            }
-
-                            if !entry.is_header : VerticalLayout {
-                                horizontal-stretch: 1;
-                                alignment: center;
-                                spacing: 1px;
-
-                                Text {
-                                    text: entry.title;
-                                    color: root.theme_text_primary;
-                                    font-size: 13px;
-                                    font-weight: entry.candidate_index == root.selected_candidate_index ? 600 : 400;
-                                    overflow: elide;
-                                }
-
-                                if entry.subtitle != "" : Text {
-                                    text: entry.subtitle;
-                                    color: root.theme_text_muted;
-                                    font-size: 10px;
-                                    overflow: elide;
-                                }
-                            }
-
-                            if !entry.is_header : Rectangle {
-                                width: 84px;
+                            if item.section_header != "" : Rectangle {
                                 height: 20px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 4px;
-                                background: root.theme_surface_bg;
-                                border-color: root.theme_border;
-                                border-width: 1px;
-
                                 Text {
-                                    text: entry.badge;
-                                    color: root.theme_text_muted;
+                                    x: 6px;
+                                    text: item.section_header;
                                     font-size: 10px;
-                                    font-weight: 600;
-                                    horizontal-alignment: center;
+                                    font-weight: 700;
+                                    color: root.theme_accent;
                                     vertical-alignment: center;
                                 }
                             }
-                        }
 
-                        row_touch := TouchArea {
-                            enabled: !entry.is_header;
-                            mouse-cursor: entry.is_header ? default : pointer;
-                            clicked => {
-                                root.selected_candidate_index = entry.candidate_index;
-                                root.trigger_candidate_at(entry.candidate_index, false);
+                            Rectangle {
+                                height: 44px;
+                                border-radius: 6px;
+                                background: idx == root.selected_index ? root.theme_selected_bg :
+                                            (row-ta.has-hover ? root.theme_card_bg : transparent);
+
+                                Rectangle {
+                                    x: 0px;
+                                    y: 9px;
+                                    width: 3px;
+                                    height: parent.height - 18px;
+                                    border-radius: 1.5px;
+                                    background: idx == root.selected_index ? root.theme_accent : transparent;
+                                }
+
+                                row-ta := TouchArea {
+                                    clicked => {
+                                        root.selected_index = idx;
+                                        root.activate_index(idx, false);
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+                                    alignment: center;
+
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        border-radius: 6px;
+                                        background: root.theme_surface_bg;
+                                        border-width: 1px;
+                                        border-color: root.theme_border;
+
+                                        Text {
+                                            text: item.icon;
+                                            font-size: 13px;
+                                            color: root.theme_accent;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        alignment: center;
+                                        spacing: 1px;
+
+                                        Text {
+                                            text: item.title;
+                                            font-size: 13px;
+                                            font-weight: idx == root.selected_index ? 600 : 500;
+                                            color: root.theme_text_primary;
+                                            overflow: elide;
+                                        }
+
+                                        Text {
+                                            text: item.subtitle;
+                                            font-size: 11px;
+                                            color: root.theme_text_muted;
+                                            overflow: elide;
+                                        }
+                                    }
+
+                                    if item.can_elevate && (idx == root.selected_index || row-ta.has-hover) : Rectangle {
+                                        width: 64px;
+                                        height: 22px;
+                                        border-radius: 4px;
+                                        background: admin-ta.has-hover ? root.theme_accent : root.theme_surface_bg;
+                                        border-width: 1px;
+                                        border-color: root.theme_border;
+
+                                        Text {
+                                            text: "Admin";
+                                            font-size: 10.5px;
+                                            font-weight: 600;
+                                            color: admin-ta.has-hover ? #101010 : root.theme_text_primary;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+
+                                        admin-ta := TouchArea {
+                                            clicked => {
+                                                root.selected_index = idx;
+                                                root.activate_index(idx, true);
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        width: 72px;
+                                        height: 20px;
+                                        border-radius: 4px;
+                                        background: root.theme_surface_bg;
+
+                                        Text {
+                                            text: item.badge;
+                                            font-size: 10px;
+                                            color: root.theme_text_muted;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
 
-            if root.entries.length > 0 : Rectangle {
-                height: 24px;
-                background: transparent;
-
+            // Minimal Footer Bar
+            Rectangle {
+                height: 22px;
                 HorizontalLayout {
-                    padding-left: 6px;
-                    padding-right: 6px;
+                    padding-left: 4px;
+                    padding-right: 4px;
                     spacing: 14px;
 
                     Text {
-                        text: "↵ Execute / Save Note";
+                        text: "↑↓ Navigate";
+                        font-size: 10.5px;
                         color: root.theme_text_muted;
-                        font-size: 11px;
                         vertical-alignment: center;
                     }
-
+                    Text {
+                        text: "↵ Open";
+                        font-size: 10.5px;
+                        color: root.theme_text_muted;
+                        vertical-alignment: center;
+                    }
                     Text {
                         text: "Ctrl+Shift+↵ Admin";
+                        font-size: 10.5px;
                         color: root.theme_text_muted;
-                        font-size: 11px;
                         vertical-alignment: center;
                     }
-
-                    Text {
-                        text: "'note ' Quick Notepad";
-                        color: root.theme_accent;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                    }
-
                     Rectangle { horizontal-stretch: 1; }
-
                     Text {
-                        text: "Ctrl+, CmdPal Settings";
+                        text: "Ctrl+, Settings  •  Esc Hide";
+                        font-size: 10.5px;
                         color: root.theme_text_muted;
-                        font-size: 11px;
                         vertical-alignment: center;
                     }
                 }
@@ -415,52 +631,46 @@ export component PaletteWindow inherits Window {
     }
 }
 
+// ============================================================================
+// MINIMAL, UNIFIED SETTINGS WINDOW (Sidebar Navigation + Shared Design System)
+// ============================================================================
 export component SettingsWindow inherits Window {
     title: "Command Palette Settings";
-    icon: root.app_icon;
-    width: 840px;
-    height: 620px;
-
-    in-out property <image> app_icon;
-
-    in property <color> theme_window_bg: #1f1f1f;
-    in property <color> theme_surface_bg: #2b2b2b;
-    in property <color> theme_card_bg: #282828;
-    in property <color> theme_selected_bg: #383838;
-    in property <color> theme_border: #3d3d3d;
-    in property <color> theme_accent: #60cdff;
-    in property <color> theme_text_primary: #ffffff;
-    in property <color> theme_text_muted: #9d9d9d;
-
+    width: 780px;
+    height: 560px;
+    min-width: 720px;
+    min-height: 500px;
     background: root.theme_window_bg;
-    default-font-family: "Segoe UI Variable Display";
+
+    in property <image> window_icon;
+    icon: root.window_icon;
+
+    in property <color> theme_window_bg: #1e1e1e;
+    in property <color> theme_surface_bg: #262626;
+    in property <color> theme_card_bg: #242424;
+    in property <color> theme_selected_bg: #323232;
+    in property <color> theme_border: #363636;
+    in property <color> theme_accent: #60cdff;
+    in property <color> theme_text_primary: #f5f5f5;
+    in property <color> theme_text_muted: #9a9a9a;
 
     in-out property <int> active_tab: 0;
+
+    // General & Toggles
     in-out property <bool> show_apps: true;
     in-out property <bool> run_on_startup: false;
-    in-out property <string> hotkey: "Ctrl+Space";
+    in-out property <string> hotkey_str: "Ctrl+Space";
     in-out property <string> theme_mode: "powertoys";
 
-    // Separated Inbuilt Shortcuts toggles
     in-out property <bool> enable_cmdpal_shortcuts: true;
     in-out property <bool> enable_builtin_cmds: true;
     in-out property <bool> enable_builtin_settings: true;
-    in-out property <[BuiltinToggleEntry]> builtin_cmd_entries: [];
-    in-out property <[BuiltinToggleEntry]> builtin_setting_entries: [];
 
-    // Default Search Engine properties
+    // Search Engine
     in-out property <string> default_search_engine: "google";
     in-out property <string> custom_search_url: "https://www.google.com/search?q={q}";
 
-    // Extensions & Notepad properties
-    in-out property <[ExtensionUiEntry]> extension_entries: [];
-    in-out property <bool> notepad_installed: true;
-    in-out property <string> notepad_file_path: "notes.md";
-    in-out property <string> new_ext_name: "";
-    in-out property <string> new_ext_bang: "";
-    in-out property <string> new_ext_kind: "NotepadFile";
-    in-out property <string> new_ext_target: "";
-
+    // Custom Theme Hex
     in-out property <string> custom_window_bg: "#1f1f1f";
     in-out property <string> custom_surface_bg: "#2b2b2b";
     in-out property <string> custom_card_bg: "#282828";
@@ -470,2229 +680,972 @@ export component SettingsWindow inherits Window {
     in-out property <string> custom_text_primary: "#ffffff";
     in-out property <string> custom_text_muted: "#9d9d9d";
 
+    // Paths
     in-out property <string> custom_cmd_path: "cmd.exe";
-    in-out property <string> custom_system_settings_path: "ms-settings:";
+    in-out property <string> custom_settings_path: "ms-settings:";
 
-    in-out property <[CategoryOrderEntry]> category_entries: [];
+    // List Models
+    in-out property <[CategoryEntry]> category_entries: [];
+    in-out property <[BuiltinToggleEntry]> builtin_cmd_entries: [];
+    in-out property <[BuiltinToggleEntry]> builtin_setting_entries: [];
     in-out property <[AppToggleEntry]> app_entries: [];
-    in-out property <[string]> file_scan_paths: [];
-    in-out property <[CustomCmdEntry]> custom_commands: [];
-    in-out property <[CustomSettingEntry]> custom_settings: [];
-    in-out property <[BangRuleEntry]> bang_entries: [];
+    in-out property <[string]> folder_entries: [];
+    in-out property <[CustomCmdEntry]> custom_cmd_entries: [];
+    in-out property <[CustomSettingEntry]> custom_setting_entries: [];
+    in-out property <[BangEntry]> bang_entries: [];
+    in-out property <[NoteBangEntry]> note_entries: [];
 
-    in-out property <string> new_scan_path: "";
-    in-out property <string> new_cmd_name: "";
-    in-out property <string> new_cmd_exec: "";
-    in-out property <string> new_setting_name: "";
-    in-out property <string> new_setting_path: "";
+    // Form Drafts
+    in-out property <string> note_bang_input: "";
+    in-out property <string> note_name_input: "";
+    in-out property <string> note_file_input: "";
+
     in-out property <string> new_bang_trigger: "";
     in-out property <string> new_bang_url: "";
-    in-out property <string> status_message: "";
 
-    callback toggle_show_apps(bool);
-    callback toggle_startup(bool);
-    callback select_hotkey(string);
-    callback select_theme_mode(string);
-    callback apply_custom_theme(string, string, string, string, string, string, string, string);
-    callback reset_custom_theme();
+    in-out property <string> builtin_filter_text: "";
+    in-out property <string> new_cmd_name: "";
+    in-out property <string> new_cmd_val: "";
+    in-out property <string> new_set_name: "";
+    in-out property <string> new_set_val: "";
 
-    callback toggle_cmdpal_shortcuts(bool);
-    callback toggle_all_builtin_cmds(bool);
-    callback toggle_builtin_cmd_item(string, bool);
-    callback toggle_all_builtin_settings(bool);
-    callback toggle_builtin_setting_item(string, bool);
+    in-out property <string> app_filter_text: "";
+    in-out property <string> new_folder_input: "";
 
-    callback select_default_search_engine(string);
-    callback save_custom_search_url(string);
-
-    callback save_notepad_file_path(string);
-    callback open_notepad_file(string);
-    callback open_extension_file(string);
-    callback open_extensions_guide();
-    callback toggle_extension_item(string, bool);
-    callback remove_extension_item(string);
-    callback restore_builtin_notepad();
-    callback add_custom_extension(string, string, string, string);
-
-    callback move_category(int, int);
-    callback reset_category_order();
-    callback toggle_app_item(string, bool);
-    callback add_scan_path(string);
-    callback remove_scan_path(int);
-    callback save_system_paths(string, string);
-    callback add_custom_command(string, string);
-    callback remove_custom_command(int);
+    callback save_general_settings(
+        bool, bool, string, string,
+        bool, bool, bool,
+        string, string,
+        string, string, string, string, string, string, string, string,
+        string, string
+    );
+    callback move_category_up(int);
+    callback move_category_down(int);
+    callback builtin_filter_changed(string);
+    callback toggle_builtin_cmd(string, bool);
+    callback toggle_builtin_setting(string, bool);
+    callback toggle_app_visibility(string, bool);
+    callback app_filter_changed(string);
+    callback add_scan_folder(string);
+    callback remove_scan_folder(int);
+    callback add_custom_cmd(string, string);
+    callback remove_custom_cmd(int);
     callback add_custom_setting(string, string);
     callback remove_custom_setting(int);
-    callback add_bang_rule(string, string);
-    callback remove_bang_rule(string);
-    callback reload_all();
+    callback add_bang(string, string);
+    callback remove_bang(string);
+    callback upsert_note_bang(string, string, string);
+    callback remove_note_bang(string);
+    callback open_note_file(string);
+    callback rescan_indexes();
+    callback close_window();
 
-    VerticalLayout {
-        padding: 16px;
-        spacing: 12px;
+    function commit_all() {
+        root.save_general_settings(
+            root.show_apps, root.run_on_startup, root.hotkey_str, root.theme_mode,
+            root.enable_cmdpal_shortcuts, root.enable_builtin_cmds, root.enable_builtin_settings,
+            root.default_search_engine, root.custom_search_url,
+            root.custom_window_bg, root.custom_surface_bg, root.custom_card_bg,
+            root.custom_selected_bg, root.custom_border, root.custom_accent,
+            root.custom_text_primary, root.custom_text_muted,
+            root.custom_cmd_path, root.custom_settings_path
+        );
+    }
 
-        HorizontalLayout {
-            height: 34px;
-            spacing: 10px;
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
 
-            Text {
-                text: "⚙ Command Palette Settings (CmdPal)";
-                color: root.theme_text_primary;
-                font-size: 18px;
-                font-weight: 700;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-            }
-
-            if root.status_message != "" : Text {
-                text: root.status_message;
-                color: root.theme_accent;
-                font-size: 12px;
-                vertical-alignment: center;
-            }
-
-            Rectangle {
-                width: 175px;
-                height: 30px;
-                border-radius: 6px;
-                background: top_guide_touch.has-hover ? root.theme_selected_bg : root.theme_surface_bg;
-                border-color: root.theme_accent;
-                border-width: 1px;
-
-                Text {
-                    text: "📖 Open Extensions Guide";
-                    color: root.theme_accent;
-                    font-size: 12px;
-                    font-weight: 700;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-
-                top_guide_touch := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.open_extensions_guide();
-                    }
-                }
-            }
-
-            Rectangle {
-                width: 115px;
-                height: 30px;
-                border-radius: 6px;
-                background: reload_touch.has-hover ? root.theme_selected_bg : root.theme_surface_bg;
-                border-color: root.theme_border;
-                border-width: 1px;
-
-                Text {
-                    text: "↻ Rescan All";
-                    color: root.theme_text_primary;
-                    font-size: 12px;
-                    font-weight: 600;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-
-                reload_touch := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.reload_all();
-                    }
-                }
-            }
-        }
-
-        // 7-Tab Navigation Bar
-        HorizontalLayout {
-            height: 34px;
-            spacing: 5px;
-
-            for tab_item[idx] in [
-                "1. General & Theme",
-                "2. Order",
-                "3. System Cmds",
-                "4. Win Settings",
-                "5. Apps & Files",
-                "6. Extensions (Note)",
-                "7. Web & Search"
-            ] : Rectangle {
-                horizontal-stretch: 1;
-                border-radius: 6px;
-                background: root.active_tab == idx
-                    ? root.theme_accent
-                    : (tab_touch.has-hover ? root.theme_selected_bg : root.theme_surface_bg);
-                border-color: root.theme_border;
-                border-width: 1px;
-
-                Text {
-                    text: tab_item;
-                    color: root.active_tab == idx ? #121212 : root.theme_text_primary;
-                    font-size: 11px;
-                    font-weight: root.active_tab == idx ? 700 : 500;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-
-                tab_touch := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.active_tab = idx;
-                    }
-                }
-            }
-        }
-
-        // TAB 0: General & Theme
-        if root.active_tab == 0 : Flickable {
-            vertical-stretch: 1;
+        // ====================================================================
+        // LEFT NAVIGATION SIDEBAR
+        // ====================================================================
+        Rectangle {
+            width: 195px;
+            background: root.theme_card_bg;
+            border-width: 1px;
+            border-color: root.theme_border;
 
             VerticalLayout {
-                spacing: 10px;
+                padding: 14px;
+                spacing: 4px;
 
-                Rectangle {
-                    height: 52px;
-                    border-radius: 8px;
-                    background: root.theme_card_bg;
-                    border-color: root.theme_border;
-                    border-width: 1px;
-
-                    HorizontalLayout {
-                        padding: 12px;
-                        spacing: 12px;
-
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            Text {
-                                text: "Show Command Palette's Own Shortcuts in Search (CmdPal Category)";
-                                color: root.theme_text_primary;
-                                font-size: 13px;
-                                font-weight: 600;
-                            }
-                            Text {
-                                text: "Separates CmdPal settings from Windows System Settings in the palette";
-                                color: root.theme_text_muted;
-                                font-size: 11px;
-                            }
-                        }
-
-                        Rectangle {
-                            width: 66px;
-                            height: 28px;
-                            border-radius: 14px;
-                            background: root.enable_cmdpal_shortcuts ? root.theme_accent : root.theme_selected_bg;
-
-                            Text {
-                                text: root.enable_cmdpal_shortcuts ? "ON" : "OFF";
-                                color: root.enable_cmdpal_shortcuts ? #121212 : root.theme_text_primary;
-                                font-size: 11px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.enable_cmdpal_shortcuts = !root.enable_cmdpal_shortcuts;
-                                    root.toggle_cmdpal_shortcuts(root.enable_cmdpal_shortcuts);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    height: 52px;
-                    border-radius: 8px;
-                    background: root.theme_card_bg;
-                    border-color: root.theme_border;
-                    border-width: 1px;
-
-                    HorizontalLayout {
-                        padding: 12px;
-                        spacing: 12px;
-
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            Text {
-                                text: "Run Command Palette on Windows Startup";
-                                color: root.theme_text_primary;
-                                font-size: 13px;
-                                font-weight: 600;
-                            }
-                            Text {
-                                text: "Automatically start in the system tray when signing into Windows";
-                                color: root.theme_text_muted;
-                                font-size: 11px;
-                            }
-                        }
-
-                        Rectangle {
-                            width: 66px;
-                            height: 28px;
-                            border-radius: 14px;
-                            background: root.run_on_startup ? root.theme_accent : root.theme_selected_bg;
-
-                            Text {
-                                text: root.run_on_startup ? "ON" : "OFF";
-                                color: root.run_on_startup ? #121212 : root.theme_text_primary;
-                                font-size: 11px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.run_on_startup = !root.run_on_startup;
-                                    root.toggle_startup(root.run_on_startup);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    height: 82px;
-                    border-radius: 8px;
-                    background: root.theme_card_bg;
-                    border-color: root.theme_border;
-                    border-width: 1px;
-
-                    VerticalLayout {
-                        padding: 12px;
-                        spacing: 8px;
-
-                        Text {
-                            text: "Global Activation Hotkey (Current: " + root.hotkey + ")";
-                            color: root.theme_text_primary;
-                            font-size: 13px;
-                            font-weight: 600;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-
-                            for preset in ["Ctrl+Space", "Alt+Space", "Ctrl+Shift+Space", "Ctrl+Alt+Space", "Alt+Q"] : Rectangle {
-                                horizontal-stretch: 1;
-                                height: 28px;
-                                border-radius: 6px;
-                                background: root.hotkey == preset ? root.theme_accent : root.theme_surface_bg;
-                                border-color: root.theme_border;
-                                border-width: 1px;
-
-                                Text {
-                                    text: preset;
-                                    color: root.hotkey == preset ? #121212 : root.theme_text_primary;
-                                    font-size: 11px;
-                                    font-weight: root.hotkey == preset ? 700 : 500;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.hotkey = preset;
-                                        root.select_hotkey(preset);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    height: 82px;
-                    border-radius: 8px;
-                    background: root.theme_card_bg;
-                    border-color: root.theme_border;
-                    border-width: 1px;
-
-                    VerticalLayout {
-                        padding: 12px;
-                        spacing: 8px;
-
-                        Text {
-                            text: "Appearance Theme Mode";
-                            color: root.theme_text_primary;
-                            font-size: 13px;
-                            font-weight: 600;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 10px;
-
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                height: 30px;
-                                border-radius: 6px;
-                                background: root.theme_mode == "powertoys" ? root.theme_accent : root.theme_surface_bg;
-                                border-color: root.theme_border;
-                                border-width: 1px;
-
-                                Text {
-                                    text: "Default (PowerToys Fluent Dark)";
-                                    color: root.theme_mode == "powertoys" ? #121212 : root.theme_text_primary;
-                                    font-size: 12px;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.theme_mode = "powertoys";
-                                        root.select_theme_mode("powertoys");
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                height: 30px;
-                                border-radius: 6px;
-                                background: root.theme_mode == "custom" ? root.theme_accent : root.theme_surface_bg;
-                                border-color: root.theme_border;
-                                border-width: 1px;
-
-                                Text {
-                                    text: "Custom Hex Theme";
-                                    color: root.theme_mode == "custom" ? #121212 : root.theme_text_primary;
-                                    font-size: 12px;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.theme_mode = "custom";
-                                        root.select_theme_mode("custom");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    height: 210px;
-                    border-radius: 8px;
-                    background: root.theme_card_bg;
-                    border-color: root.theme_border;
-                    border-width: 1px;
-
-                    VerticalLayout {
-                        padding: 12px;
-                        spacing: 8px;
-
-                        Text {
-                            text: "Custom Theme Hex Colors (#RRGGBB)";
-                            color: root.theme_text_primary;
-                            font-size: 13px;
-                            font-weight: 600;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text { text: "Window BG"; color: root.theme_text_muted; font-size: 11px; }
-                                Rectangle {
-                                    height: 28px; border-radius: 5px; background: root.theme_surface_bg; border-color: root.theme_border; border-width: 1px;
-                                    TextInput { width: 100%; height: 100%; text <=> root.custom_window_bg; color: root.theme_text_primary; font-size: 12px; vertical-alignment: center; single-line: true; }
-                                }
-                            }
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text { text: "Surface BG"; color: root.theme_text_muted; font-size: 11px; }
-                                Rectangle {
-                                    height: 28px; border-radius: 5px; background: root.theme_surface_bg; border-color: root.theme_border; border-width: 1px;
-                                    TextInput { width: 100%; height: 100%; text <=> root.custom_surface_bg; color: root.theme_text_primary; font-size: 12px; vertical-alignment: center; single-line: true; }
-                                }
-                            }
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text { text: "Card BG"; color: root.theme_text_muted; font-size: 11px; }
-                                Rectangle {
-                                    height: 28px; border-radius: 5px; background: root.theme_surface_bg; border-color: root.theme_border; border-width: 1px;
-                                    TextInput { width: 100%; height: 100%; text <=> root.custom_card_bg; color: root.theme_text_primary; font-size: 12px; vertical-alignment: center; single-line: true; }
-                                }
-                            }
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text { text: "Selected BG"; color: root.theme_text_muted; font-size: 11px; }
-                                Rectangle {
-                                    height: 28px; border-radius: 5px; background: root.theme_surface_bg; border-color: root.theme_border; border-width: 1px;
-                                    TextInput { width: 100%; height: 100%; text <=> root.custom_selected_bg; color: root.theme_text_primary; font-size: 12px; vertical-alignment: center; single-line: true; }
-                                }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text { text: "Border"; color: root.theme_text_muted; font-size: 11px; }
-                                Rectangle {
-                                    height: 28px; border-radius: 5px; background: root.theme_surface_bg; border-color: root.theme_border; border-width: 1px;
-                                    TextInput { width: 100%; height: 100%; text <=> root.custom_border; color: root.theme_text_primary; font-size: 12px; vertical-alignment: center; single-line: true; }
-                                }
-                            }
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text { text: "Accent"; color: root.theme_text_muted; font-size: 11px; }
-                                Rectangle {
-                                    height: 28px; border-radius: 5px; background: root.theme_surface_bg; border-color: root.theme_border; border-width: 1px;
-                                    TextInput { width: 100%; height: 100%; text <=> root.custom_accent; color: root.theme_text_primary; font-size: 12px; vertical-alignment: center; single-line: true; }
-                                }
-                            }
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text { text: "Primary Text"; color: root.theme_text_muted; font-size: 11px; }
-                                Rectangle {
-                                    height: 28px; border-radius: 5px; background: root.theme_surface_bg; border-color: root.theme_border; border-width: 1px;
-                                    TextInput { width: 100%; height: 100%; text <=> root.custom_text_primary; color: root.theme_text_primary; font-size: 12px; vertical-alignment: center; single-line: true; }
-                                }
-                            }
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Text { text: "Muted Text"; color: root.theme_text_muted; font-size: 11px; }
-                                Rectangle {
-                                    height: 28px; border-radius: 5px; background: root.theme_surface_bg; border-color: root.theme_border; border-width: 1px;
-                                    TextInput { width: 100%; height: 100%; text <=> root.custom_text_muted; color: root.theme_text_primary; font-size: 12px; vertical-alignment: center; single-line: true; }
-                                }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 10px;
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                height: 30px;
-                                border-radius: 6px;
-                                background: root.theme_accent;
-                                Text {
-                                    text: "Save & Apply Custom Theme";
-                                    color: #121212;
-                                    font-size: 12px;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.apply_custom_theme(
-                                            root.custom_window_bg,
-                                            root.custom_surface_bg,
-                                            root.custom_card_bg,
-                                            root.custom_selected_bg,
-                                            root.custom_border,
-                                            root.custom_accent,
-                                            root.custom_text_primary,
-                                            root.custom_text_muted
-                                        );
-                                    }
-                                }
-                            }
-                            Rectangle {
-                                width: 180px;
-                                height: 30px;
-                                border-radius: 6px;
-                                background: root.theme_surface_bg;
-                                border-color: root.theme_border;
-                                border-width: 1px;
-                                Text {
-                                    text: "Reset PowerToys Colors";
-                                    color: root.theme_text_primary;
-                                    font-size: 12px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.reset_custom_theme();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // TAB 1: Category Display Order
-        if root.active_tab == 1 : VerticalLayout {
-            vertical-stretch: 1;
-            spacing: 10px;
-
-            HorizontalLayout {
-                height: 32px;
-                spacing: 10px;
-
-                Text {
-                    text: "Arrange Shelf Category Priority (CmdPal Settings & Windows Settings are now separate!)";
-                    color: root.theme_text_muted;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-
-                Rectangle {
-                    width: 140px;
-                    height: 30px;
-                    border-radius: 6px;
-                    background: root.theme_surface_bg;
-                    border-color: root.theme_border;
-                    border-width: 1px;
-
-                    Text {
-                        text: "Reset Default Order";
-                        color: root.theme_text_primary;
-                        font-size: 12px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.reset_category_order();
-                        }
-                    }
-                }
-            }
-
-            Flickable {
-                vertical-stretch: 1;
-
-                VerticalLayout {
-                    spacing: 6px;
-
-                    for cat[idx] in root.category_entries : Rectangle {
-                        height: 50px;
-                        border-radius: 8px;
-                        background: root.theme_card_bg;
-                        border-color: root.theme_border;
-                        border-width: 1px;
-
-                        HorizontalLayout {
-                            padding-left: 14px;
-                            padding-right: 14px;
-                            spacing: 12px;
-
-                            Text {
-                                text: (idx + 1) + ".";
-                                color: root.theme_accent;
-                                font-size: 14px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                                width: 22px;
-                            }
-
-                            Text {
-                                text: cat.icon;
-                                color: root.theme_text_primary;
-                                font-size: 16px;
-                                vertical-alignment: center;
-                                width: 24px;
-                            }
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                alignment: center;
-                                Text {
-                                    text: cat.display_name;
-                                    color: root.theme_text_primary;
-                                    font-size: 13px;
-                                    font-weight: 600;
-                                }
-                                Text {
-                                    text: cat.description;
-                                    color: root.theme_text_muted;
-                                    font-size: 11px;
-                                    overflow: elide;
-                                }
-                            }
-
-                            Rectangle {
-                                width: 34px;
-                                height: 28px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 5px;
-                                background: idx > 0 ? root.theme_surface_bg : transparent;
-                                border-color: root.theme_border;
-                                border-width: idx > 0 ? 1px : 0px;
-
-                                Text {
-                                    text: "▲";
-                                    color: idx > 0 ? root.theme_text_primary : root.theme_text_muted;
-                                    font-size: 12px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    enabled: idx > 0;
-                                    mouse-cursor: idx > 0 ? pointer : default;
-                                    clicked => {
-                                        root.move_category(idx, -1);
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                width: 34px;
-                                height: 28px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 5px;
-                                background: idx < (root.category_entries.length - 1) ? root.theme_surface_bg : transparent;
-                                border-color: root.theme_border;
-                                border-width: idx < (root.category_entries.length - 1) ? 1px : 0px;
-
-                                Text {
-                                    text: "▼";
-                                    color: idx < (root.category_entries.length - 1) ? root.theme_text_primary : root.theme_text_muted;
-                                    font-size: 12px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    enabled: idx < (root.category_entries.length - 1);
-                                    mouse-cursor: idx < (root.category_entries.length - 1) ? pointer : default;
-                                    clicked => {
-                                        root.move_category(idx, 1);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // TAB 2: System Commands (Inbuilt Toggleable + Custom Commands)
-        if root.active_tab == 2 : VerticalLayout {
-            vertical-stretch: 1;
-            spacing: 10px;
-
-            Rectangle {
-                height: 48px;
-                border-radius: 8px;
-                background: root.theme_card_bg;
-                border-color: root.theme_border;
-                border-width: 1px;
-
+                // App Header
                 HorizontalLayout {
-                    padding: 10px;
-                    spacing: 10px;
-
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        alignment: center;
-                        Text {
-                            text: "Enable Inbuilt System Command Shortcuts (Task Manager, Lock, Restart, etc.)";
-                            color: root.theme_text_primary;
-                            font-size: 13px;
-                            font-weight: 600;
-                        }
-                        Text {
-                            text: "Toggle all inbuilt commands below or enable/disable individual shortcuts";
-                            color: root.theme_text_muted;
-                            font-size: 11px;
-                        }
-                    }
+                    spacing: 9px;
+                    padding-bottom: 12px;
+                    alignment: start;
 
                     Rectangle {
-                        width: 68px;
-                        height: 28px;
-                        border-radius: 14px;
-                        background: root.enable_builtin_cmds ? root.theme_accent : root.theme_selected_bg;
-
+                        width: 26px;
+                        height: 26px;
+                        border-radius: 6px;
+                        background: root.theme_surface_bg;
+                        border-width: 1px;
+                        border-color: root.theme_border;
                         Text {
-                            text: root.enable_builtin_cmds ? "ALL ON" : "OFF";
-                            color: root.enable_builtin_cmds ? #121212 : root.theme_text_primary;
-                            font-size: 11px;
-                            font-weight: 700;
+                            text: "⌘";
+                            font-size: 13px;
+                            color: root.theme_accent;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
-
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.enable_builtin_cmds = !root.enable_builtin_cmds;
-                                root.toggle_all_builtin_cmds(root.enable_builtin_cmds);
-                            }
-                        }
                     }
-                }
-            }
-
-            Text {
-                text: "Inbuilt System Commands (Click ON/OFF to enable or disable individual shortcuts):";
-                color: root.theme_text_muted;
-                font-size: 11px;
-            }
-
-            Flickable {
-                height: 185px;
-
-                VerticalLayout {
-                    spacing: 4px;
-
-                    for item in root.builtin_cmd_entries : Rectangle {
-                        height: 36px;
-                        border-radius: 6px;
-                        background: root.theme_card_bg;
-                        border-color: root.theme_border;
-                        border-width: 1px;
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 10px;
-
-                            Text {
-                                text: item.title;
-                                color: root.theme_text_primary;
-                                font-size: 12px;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                                width: 220px;
-                                overflow: elide;
-                            }
-
-                            Text {
-                                text: item.subtitle;
-                                color: root.theme_text_muted;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                            }
-
-                            Rectangle {
-                                width: 58px;
-                                height: 24px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 12px;
-                                background: item.enabled ? root.theme_accent : root.theme_selected_bg;
-
-                                Text {
-                                    text: item.enabled ? "ON" : "OFF";
-                                    color: item.enabled ? #121212 : root.theme_text_primary;
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.toggle_builtin_cmd_item(item.id, !item.enabled);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            Rectangle {
-                height: 76px;
-                border-radius: 8px;
-                background: root.theme_card_bg;
-                border-color: root.theme_border;
-                border-width: 1px;
-
-                VerticalLayout {
-                    padding: 10px;
-                    spacing: 6px;
-
-                    Text {
-                        text: "Add Custom Shell Command & Default Shell Runner (" + root.custom_cmd_path + ")";
-                        color: root.theme_text_primary;
-                        font-size: 12px;
-                        font-weight: 600;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-
-                        Rectangle {
-                            width: 170px;
-                            height: 28px;
-                            border-radius: 6px;
-                            background: root.theme_surface_bg;
-                            border-color: root.theme_border;
-                            border-width: 1px;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                TextInput {
-                                    width: 100%; height: 100%;
-                                    text <=> root.new_cmd_name;
-                                    color: root.theme_text_primary;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            height: 28px;
-                            border-radius: 6px;
-                            background: root.theme_surface_bg;
-                            border-color: root.theme_border;
-                            border-width: 1px;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                TextInput {
-                                    width: 100%; height: 100%;
-                                    text <=> root.new_cmd_exec;
-                                    color: root.theme_text_primary;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            width: 110px;
-                            height: 28px;
-                            border-radius: 6px;
-                            background: root.theme_accent;
-                            Text {
-                                text: "+ Add Cmd";
-                                color: #121212;
-                                font-size: 12px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.add_custom_command(root.new_cmd_name, root.new_cmd_exec);
-                                    root.new_cmd_name = "";
-                                    root.new_cmd_exec = "";
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            Flickable {
-                vertical-stretch: 1;
-
-                VerticalLayout {
-                    spacing: 4px;
-
-                    for cmd[idx] in root.custom_commands : Rectangle {
-                        height: 36px;
-                        border-radius: 6px;
-                        background: root.theme_card_bg;
-                        border-color: root.theme_border;
-                        border-width: 1px;
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 10px;
-
-                            Text {
-                                text: cmd.name;
-                                color: root.theme_accent;
-                                font-size: 12px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                                width: 180px;
-                                overflow: elide;
-                            }
-
-                            Text {
-                                text: cmd.command;
-                                color: root.theme_text_muted;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                            }
-
-                            Rectangle {
-                                width: 68px;
-                                height: 24px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 5px;
-                                background: #442726;
-
-                                Text {
-                                    text: "Remove";
-                                    color: #ff99a4;
-                                    font-size: 11px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.remove_custom_command(idx);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // TAB 3: Windows System Settings (Inbuilt Toggleable + Custom Settings)
-        if root.active_tab == 3 : VerticalLayout {
-            vertical-stretch: 1;
-            spacing: 10px;
-
-            Rectangle {
-                height: 48px;
-                border-radius: 8px;
-                background: root.theme_card_bg;
-                border-color: root.theme_border;
-                border-width: 1px;
-
-                HorizontalLayout {
-                    padding: 10px;
-                    spacing: 10px;
 
                     VerticalLayout {
-                        horizontal-stretch: 1;
                         alignment: center;
                         Text {
-                            text: "Enable Inbuilt Windows System Settings Shortcuts (ms-settings:)";
-                            color: root.theme_text_primary;
-                            font-size: 13px;
-                            font-weight: 600;
-                        }
-                        Text {
-                            text: "Shown under 'WINDOWS SYSTEM SETTINGS' (separate from CmdPal's own settings)";
-                            color: root.theme_text_muted;
-                            font-size: 11px;
-                        }
-                    }
-
-                    Rectangle {
-                        width: 68px;
-                        height: 28px;
-                        border-radius: 14px;
-                        background: root.enable_builtin_settings ? root.theme_accent : root.theme_selected_bg;
-
-                        Text {
-                            text: root.enable_builtin_settings ? "ALL ON" : "OFF";
-                            color: root.enable_builtin_settings ? #121212 : root.theme_text_primary;
-                            font-size: 11px;
+                            text: "CmdPal";
+                            font-size: 13.5px;
                             font-weight: 700;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                            color: root.theme_text_primary;
                         }
-
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.enable_builtin_settings = !root.enable_builtin_settings;
-                                root.toggle_all_builtin_settings(root.enable_builtin_settings);
-                            }
+                        Text {
+                            text: "Settings";
+                            font-size: 10.5px;
+                            color: root.theme_text_muted;
                         }
                     }
                 }
-            }
 
-            Text {
-                text: "Inbuilt Windows Settings Shortcuts (Click ON/OFF to enable or disable individual items):";
-                color: root.theme_text_muted;
-                font-size: 11px;
-            }
-
-            Flickable {
-                height: 195px;
-
-                VerticalLayout {
-                    spacing: 4px;
-
-                    for item in root.builtin_setting_entries : Rectangle {
-                        height: 36px;
-                        border-radius: 6px;
-                        background: root.theme_card_bg;
-                        border-color: root.theme_border;
-                        border-width: 1px;
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 10px;
-
-                            Text {
-                                text: item.title;
-                                color: root.theme_text_primary;
-                                font-size: 12px;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                                width: 225px;
-                                overflow: elide;
-                            }
-
-                            Text {
-                                text: item.subtitle;
-                                color: root.theme_text_muted;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                            }
-
-                            Rectangle {
-                                width: 58px;
-                                height: 24px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 12px;
-                                background: item.enabled ? root.theme_accent : root.theme_selected_bg;
-
-                                Text {
-                                    text: item.enabled ? "ON" : "OFF";
-                                    color: item.enabled ? #121212 : root.theme_text_primary;
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.toggle_builtin_setting_item(item.id, !item.enabled);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                SidebarNavItem {
+                    icon: "⚙"; label: "General & Order";
+                    active: root.active_tab == 0;
+                    accent: root.theme_accent; selected-bg: root.theme_selected_bg;
+                    text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                    clicked => { root.active_tab = 0; }
                 }
-            }
-
-            Rectangle {
-                height: 76px;
-                border-radius: 8px;
-                background: root.theme_card_bg;
-                border-color: root.theme_border;
-                border-width: 1px;
-
-                VerticalLayout {
-                    padding: 10px;
-                    spacing: 6px;
-
-                    Text {
-                        text: "Add Custom Windows Setting URI or Control Panel Applet";
-                        color: root.theme_text_primary;
-                        font-size: 12px;
-                        font-weight: 600;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-
-                        Rectangle {
-                            width: 190px;
-                            height: 28px;
-                            border-radius: 6px;
-                            background: root.theme_surface_bg;
-                            border-color: root.theme_border;
-                            border-width: 1px;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                TextInput {
-                                    width: 100%; height: 100%;
-                                    text <=> root.new_setting_name;
-                                    color: root.theme_text_primary;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            height: 28px;
-                            border-radius: 6px;
-                            background: root.theme_surface_bg;
-                            border-color: root.theme_border;
-                            border-width: 1px;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                TextInput {
-                                    width: 100%; height: 100%;
-                                    text <=> root.new_setting_path;
-                                    color: root.theme_text_primary;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            width: 115px;
-                            height: 28px;
-                            border-radius: 6px;
-                            background: root.theme_accent;
-                            Text {
-                                text: "+ Add Setting";
-                                color: #121212;
-                                font-size: 12px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.add_custom_setting(root.new_setting_name, root.new_setting_path);
-                                    root.new_setting_name = "";
-                                    root.new_setting_path = "";
-                                }
-                            }
-                        }
-                    }
+                SidebarNavItem {
+                    icon: "📝"; label: "Note Bangs";
+                    active: root.active_tab == 1;
+                    accent: root.theme_accent; selected-bg: root.theme_selected_bg;
+                    text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                    clicked => { root.active_tab = 1; }
                 }
-            }
+                SidebarNavItem {
+                    icon: "🌐"; label: "Web & Bangs";
+                    active: root.active_tab == 2;
+                    accent: root.theme_accent; selected-bg: root.theme_selected_bg;
+                    text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                    clicked => { root.active_tab = 2; }
+                }
+                SidebarNavItem {
+                    icon: "⚡"; label: "Commands";
+                    active: root.active_tab == 3;
+                    accent: root.theme_accent; selected-bg: root.theme_selected_bg;
+                    text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                    clicked => { root.active_tab = 3; }
+                }
+                SidebarNavItem {
+                    icon: "❖"; label: "Apps & Files";
+                    active: root.active_tab == 4;
+                    accent: root.theme_accent; selected-bg: root.theme_selected_bg;
+                    text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                    clicked => { root.active_tab = 4; }
+                }
+                SidebarNavItem {
+                    icon: "🎨"; label: "Appearance";
+                    active: root.active_tab == 5;
+                    accent: root.theme_accent; selected-bg: root.theme_selected_bg;
+                    text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                    clicked => { root.active_tab = 5; }
+                }
 
-            Flickable {
-                vertical-stretch: 1;
+                Rectangle { vertical-stretch: 1; }
 
-                VerticalLayout {
-                    spacing: 4px;
-
-                    for st[idx] in root.custom_settings : Rectangle {
-                        height: 36px;
-                        border-radius: 6px;
-                        background: root.theme_card_bg;
-                        border-color: root.theme_border;
-                        border-width: 1px;
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 10px;
-
-                            Text {
-                                text: st.name;
-                                color: root.theme_accent;
-                                font-size: 12px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                                width: 190px;
-                                overflow: elide;
-                            }
-
-                            Text {
-                                text: st.path;
-                                color: root.theme_text_muted;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                            }
-
-                            Rectangle {
-                                width: 68px;
-                                height: 24px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 5px;
-                                background: #442726;
-
-                                Text {
-                                    text: "Remove";
-                                    color: #ff99a4;
-                                    font-size: 11px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.remove_custom_setting(idx);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                ActionBtn {
+                    label: "↻ Rescan Index";
+                    accent: root.theme_accent; surface-bg: root.theme_surface_bg;
+                    selected-bg: root.theme_selected_bg; border-col: root.theme_border;
+                    text-primary: root.theme_text_primary;
+                    clicked => { root.rescan_indexes(); }
                 }
             }
         }
 
-        // TAB 4: Installed Apps & Custom File Scan Paths
-        if root.active_tab == 4 : VerticalLayout {
-            vertical-stretch: 1;
-            spacing: 10px;
+        // ====================================================================
+        // RIGHT CONTENT AREA
+        // ====================================================================
+        VerticalLayout {
+            horizontal-stretch: 1;
+            padding: 18px;
+            spacing: 12px;
 
-            HorizontalLayout {
-                height: 34px;
-                spacing: 10px;
+            // Main Scrollable Tab Body
+            Rectangle {
+                vertical-stretch: 1;
+                clip: true;
 
-                Text {
-                    text: "Show Installed Start Menu Applications in Suggestions:";
-                    color: root.theme_text_primary;
-                    font-size: 13px;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
+                // ------------------------------------------------------------
+                // TAB 0: GENERAL & SHELF ORDER
+                // ------------------------------------------------------------
+                if root.active_tab == 0 : ScrollView {
+                    width: 100%;
+                    height: 100%;
+
+                    VerticalLayout {
+                        spacing: 12px;
+                        padding-right: 6px;
+
+                        Text {
+                            text: "General & Shelf Order";
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: root.theme_text_primary;
+                        }
+
+                        // Startup & Global Hotkey Card
+                        SettingCard {
+                            card-bg: root.theme_card_bg; border-col: root.theme_border;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 10px;
+
+                                HorizontalLayout {
+                                    alignment: space-between;
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        Text { text: "Run on Windows Startup"; font-size: 12.5px; font-weight: 600; color: root.theme_text_primary; }
+                                        Text { text: "Start silently in the system tray when signing in"; font-size: 11px; color: root.theme_text_muted; }
+                                    }
+                                    PillSwitch {
+                                        checked: root.run_on_startup;
+                                        accent: root.theme_accent; surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                        toggled(v) => { root.run_on_startup = v; root.commit_all(); }
+                                    }
+                                }
+
+                                Rectangle { height: 1px; background: root.theme_border; }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: center;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 2px;
+                                        Text { text: "Global Activation Hotkey"; font-size: 12.5px; font-weight: 600; color: root.theme_text_primary; }
+                                        Text { text: "Press from anywhere in Windows to toggle palette"; font-size: 11px; color: root.theme_text_muted; }
+                                    }
+                                    FlatInput {
+                                        width: 135px;
+                                        text <=> root.hotkey_str;
+                                        placeholder: "Ctrl+Space";
+                                        surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                        accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                                    }
+                                    ActionBtn {
+                                        label: "Ctrl+Space";
+                                        accent: root.theme_accent; surface-bg: root.theme_surface_bg;
+                                        selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                        clicked => { root.hotkey_str = "Ctrl+Space"; root.commit_all(); }
+                                    }
+                                    ActionBtn {
+                                        label: "Alt+Space";
+                                        accent: root.theme_accent; surface-bg: root.theme_surface_bg;
+                                        selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                        clicked => { root.hotkey_str = "Alt+Space"; root.commit_all(); }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Result Sources Toggles
+                        SettingCard {
+                            card-bg: root.theme_card_bg; border-col: root.theme_border;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 10px;
+
+                                HorizontalLayout {
+                                    alignment: space-between;
+                                    Text { text: "Show Start Menu Applications"; font-size: 12.5px; color: root.theme_text_primary; vertical-alignment: center; }
+                                    PillSwitch {
+                                        checked: root.show_apps;
+                                        accent: root.theme_accent; surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                        toggled(v) => { root.show_apps = v; root.commit_all(); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    alignment: space-between;
+                                    Text { text: "Show Built-in System Commands (Task Manager, cmd, etc.)"; font-size: 12.5px; color: root.theme_text_primary; vertical-alignment: center; }
+                                    PillSwitch {
+                                        checked: root.enable_builtin_cmds;
+                                        accent: root.theme_accent; surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                        toggled(v) => { root.enable_builtin_cmds = v; root.commit_all(); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    alignment: space-between;
+                                    Text { text: "Show Built-in Windows Settings (Display, Wi-Fi, Update)"; font-size: 12.5px; color: root.theme_text_primary; vertical-alignment: center; }
+                                    PillSwitch {
+                                        checked: root.enable_builtin_settings;
+                                        accent: root.theme_accent; surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                        toggled(v) => { root.enable_builtin_settings = v; root.commit_all(); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    alignment: space-between;
+                                    Text { text: "Show Palette Quick-Actions (Theme, Reload, Preferences)"; font-size: 12.5px; color: root.theme_text_primary; vertical-alignment: center; }
+                                    PillSwitch {
+                                        checked: root.enable_cmdpal_shortcuts;
+                                        accent: root.theme_accent; surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                        toggled(v) => { root.enable_cmdpal_shortcuts = v; root.commit_all(); }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Category Priority Order
+                        SettingCard {
+                            card-bg: root.theme_card_bg; border-col: root.theme_border;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 6px;
+
+                                Text { text: "Shelf Priority Order"; font-size: 12.5px; font-weight: 600; color: root.theme_text_primary; }
+                                Text { text: "Controls tie-breaking order when multiple shelves match a query"; font-size: 11px; color: root.theme_text_muted; }
+
+                                for cat[idx] in root.category_entries : Rectangle {
+                                    height: 36px;
+                                    border-radius: 5px;
+                                    background: root.theme_surface_bg;
+
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 8px;
+                                        spacing: 8px;
+                                        alignment: center;
+
+                                        Text { text: "#" + cat.rank; font-size: 11px; font-weight: 700; color: root.theme_accent; width: 22px; vertical-alignment: center; }
+                                        Text { text: cat.icon; font-size: 12.5px; width: 18px; vertical-alignment: center; }
+                                        Text { text: cat.label; font-size: 12px; font-weight: 600; color: root.theme_text_primary; horizontal-stretch: 1; vertical-alignment: center; }
+
+                                        ActionBtn {
+                                            label: "↑";
+                                            accent: root.theme_accent; surface-bg: root.theme_card_bg;
+                                            selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                            clicked => { if (!cat.is_first) { root.move_category_up(idx); } }
+                                        }
+                                        ActionBtn {
+                                            label: "↓";
+                                            accent: root.theme_accent; surface-bg: root.theme_card_bg;
+                                            selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                            clicked => { if (!cat.is_last) { root.move_category_down(idx); } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
-                Rectangle {
-                    width: 68px;
-                    height: 28px;
-                    border-radius: 14px;
-                    background: root.show_apps ? root.theme_accent : root.theme_selected_bg;
+                // ------------------------------------------------------------
+                // TAB 1: MULTI-FILE NOTE BANGS
+                // ------------------------------------------------------------
+                if root.active_tab == 1 : VerticalLayout {
+                    spacing: 12px;
+
+                    VerticalLayout {
+                        spacing: 3px;
+                        Text {
+                            text: "Note Bangs (Multiple Text & Markdown Files)";
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: root.theme_text_primary;
+                        }
+                        Text {
+                            text: "Bind different bangs (e.g. 'note', 'todo', 'work') to separate .txt or .md files. Type '<bang> ' in the palette to append lines or search existing lines.";
+                            font-size: 11.5px;
+                            color: root.theme_text_muted;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // Add / Update Note Bang Form
+                    SettingCard {
+                        card-bg: root.theme_card_bg; border-col: root.theme_border;
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text { text: "Add or Update Note Bang"; font-size: 12px; font-weight: 600; color: root.theme_text_primary; }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                FlatInput {
+                                    width: 105px;
+                                    text <=> root.note_bang_input;
+                                    placeholder: "Bang (todo)";
+                                    surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                    accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                                }
+                                FlatInput {
+                                    width: 150px;
+                                    text <=> root.note_name_input;
+                                    placeholder: "Label (To-Do List)";
+                                    surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                    accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                                }
+                                FlatInput {
+                                    horizontal-stretch: 1;
+                                    text <=> root.note_file_input;
+                                    placeholder: "File path (e.g. todo.txt or D:\\notes\\work.md)";
+                                    surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                    accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                                }
+                                ActionBtn {
+                                    label: "Save Bang";
+                                    primary: true;
+                                    accent: root.theme_accent;
+                                    clicked => {
+                                        root.upsert_note_bang(root.note_bang_input, root.note_name_input, root.note_file_input);
+                                        root.note_bang_input = "";
+                                        root.note_name_input = "";
+                                        root.note_file_input = "";
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Configured Note Bangs List
+                    SettingCard {
+                        vertical-stretch: 1;
+                        card-bg: root.theme_card_bg; border-col: root.theme_border;
+
+                        ScrollView {
+                            width: 100%;
+                            height: 100%;
+                            viewport-height: root.note_entries.length * 48px;
+
+                            VerticalLayout {
+                                padding: 10px;
+                                spacing: 6px;
+
+                                for item in root.note_entries : Rectangle {
+                                    height: 42px;
+                                    border-radius: 6px;
+                                    background: root.theme_surface_bg;
+
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 8px;
+                                        spacing: 10px;
+                                        alignment: center;
+
+                                        Rectangle {
+                                            width: 64px;
+                                            height: 24px;
+                                            border-radius: 4px;
+                                            background: root.theme_accent.with-alpha(0.15);
+                                            Text {
+                                                text: "!" + item.bang;
+                                                font-size: 11.5px;
+                                                font-weight: 700;
+                                                color: root.theme_accent;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            alignment: center;
+                                            Text { text: item.name; font-size: 12.5px; font-weight: 600; color: root.theme_text_primary; overflow: elide; }
+                                            Text { text: item.file_path; font-size: 11px; color: root.theme_text_muted; overflow: elide; }
+                                        }
+
+                                        ActionBtn {
+                                            label: "Edit";
+                                            accent: root.theme_accent; surface-bg: root.theme_card_bg;
+                                            selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                            clicked => {
+                                                root.note_bang_input = item.bang;
+                                                root.note_name_input = item.name;
+                                                root.note_file_input = item.file_path;
+                                            }
+                                        }
+
+                                        ActionBtn {
+                                            label: "Open File";
+                                            accent: root.theme_accent; surface-bg: root.theme_card_bg;
+                                            selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                            clicked => { root.open_note_file(item.file_path); }
+                                        }
+
+                                        ActionBtn {
+                                            label: "Remove";
+                                            danger: true;
+                                            border-col: root.theme_border;
+                                            clicked => { root.remove_note_bang(item.bang); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ------------------------------------------------------------
+                // TAB 2: WEB SEARCH & BANGS
+                // ------------------------------------------------------------
+                if root.active_tab == 2 : VerticalLayout {
+                    spacing: 12px;
 
                     Text {
-                        text: root.show_apps ? "ON" : "OFF";
-                        color: root.show_apps ? #121212 : root.theme_text_primary;
-                        font-size: 11px;
+                        text: "Web Search & Bangs";
+                        font-size: 16px;
                         font-weight: 700;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                        color: root.theme_text_primary;
                     }
 
-                    TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.show_apps = !root.show_apps;
-                            root.toggle_show_apps(root.show_apps);
-                        }
-                    }
-                }
-            }
+                    SettingCard {
+                        card-bg: root.theme_card_bg; border-col: root.theme_border;
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
 
-            Flickable {
-                height: 210px;
+                            Text { text: "Default Fallback Search Engine"; font-size: 12.5px; font-weight: 600; color: root.theme_text_primary; }
 
-                VerticalLayout {
-                    spacing: 4px;
-
-                    for app in root.app_entries : Rectangle {
-                        height: 38px;
-                        border-radius: 6px;
-                        background: root.theme_card_bg;
-                        border-color: root.theme_border;
-                        border-width: 1px;
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 10px;
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                alignment: center;
-                                Text {
-                                    text: app.name;
-                                    color: root.theme_text_primary;
-                                    font-size: 12px;
-                                    font-weight: 600;
-                                    overflow: elide;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                ActionBtn {
+                                    label: "Google"; primary: root.default_search_engine == "google";
+                                    accent: root.theme_accent; surface-bg: root.theme_surface_bg; selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                    clicked => { root.default_search_engine = "google"; root.commit_all(); }
                                 }
-                                Text {
-                                    text: app.path;
-                                    color: root.theme_text_muted;
-                                    font-size: 10px;
-                                    overflow: elide;
+                                ActionBtn {
+                                    label: "DuckDuckGo"; primary: root.default_search_engine == "duckduckgo";
+                                    accent: root.theme_accent; surface-bg: root.theme_surface_bg; selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                    clicked => { root.default_search_engine = "duckduckgo"; root.commit_all(); }
+                                }
+                                ActionBtn {
+                                    label: "Bing"; primary: root.default_search_engine == "bing";
+                                    accent: root.theme_accent; surface-bg: root.theme_surface_bg; selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                    clicked => { root.default_search_engine = "bing"; root.commit_all(); }
+                                }
+                                ActionBtn {
+                                    label: "Brave"; primary: root.default_search_engine == "brave";
+                                    accent: root.theme_accent; surface-bg: root.theme_surface_bg; selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                    clicked => { root.default_search_engine = "brave"; root.commit_all(); }
+                                }
+                                ActionBtn {
+                                    label: "Perplexity"; primary: root.default_search_engine == "perplexity";
+                                    accent: root.theme_accent; surface-bg: root.theme_surface_bg; selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                    clicked => { root.default_search_engine = "perplexity"; root.commit_all(); }
+                                }
+                                ActionBtn {
+                                    label: "Custom"; primary: root.default_search_engine == "custom";
+                                    accent: root.theme_accent; surface-bg: root.theme_surface_bg; selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                    clicked => { root.default_search_engine = "custom"; root.commit_all(); }
                                 }
                             }
 
-                            Rectangle {
-                                width: 64px;
-                                height: 24px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 12px;
-                                background: app.enabled ? root.theme_accent : root.theme_selected_bg;
+                            if root.default_search_engine == "custom" : FlatInput {
+                                text <=> root.custom_search_url;
+                                placeholder: "Custom URL with {q} placeholder";
+                                surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                            }
+                        }
+                    }
 
-                                Text {
-                                    text: app.enabled ? "SHOWN" : "HIDDEN";
-                                    color: app.enabled ? #121212 : root.theme_text_primary;
-                                    font-size: 10px;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
+                    // Add Web Bang
+                    SettingCard {
+                        card-bg: root.theme_card_bg; border-col: root.theme_border;
+                        HorizontalLayout {
+                            padding: 10px;
+                            spacing: 8px;
+                            FlatInput {
+                                width: 100px;
+                                text <=> root.new_bang_trigger;
+                                placeholder: "Key (yt)";
+                                surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                            }
+                            FlatInput {
+                                horizontal-stretch: 1;
+                                text <=> root.new_bang_url;
+                                placeholder: "https://example.com/search?q={q}";
+                                surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                            }
+                            ActionBtn {
+                                label: "+ Add Bang";
+                                primary: true;
+                                accent: root.theme_accent;
+                                clicked => {
+                                    root.add_bang(root.new_bang_trigger, root.new_bang_url);
+                                    root.new_bang_trigger = "";
+                                    root.new_bang_url = "";
                                 }
+                            }
+                        }
+                    }
 
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.toggle_app_item(app.name, !app.enabled);
+                    // Web Bangs List
+                    SettingCard {
+                        vertical-stretch: 1;
+                        card-bg: root.theme_card_bg; border-col: root.theme_border;
+                        ScrollView {
+                            width: 100%;
+                            height: 100%;
+                            viewport-height: root.bang_entries.length * 40px;
+
+                            VerticalLayout {
+                                padding: 10px;
+                                spacing: 5px;
+                                for b in root.bang_entries : Rectangle {
+                                    height: 34px;
+                                    border-radius: 5px;
+                                    background: root.theme_surface_bg;
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 8px;
+                                        spacing: 10px;
+                                        alignment: center;
+                                        Text { text: "!" + b.trigger; font-size: 12px; font-weight: 700; color: root.theme_accent; width: 65px; vertical-alignment: center; }
+                                        Text { text: b.url; font-size: 11.5px; color: root.theme_text_muted; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
+                                        ActionBtn {
+                                            label: "Remove"; danger: true; border-col: root.theme_border;
+                                            clicked => { root.remove_bang(b.trigger); }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+
+                // ------------------------------------------------------------
+                // TAB 3: COMMANDS & WINDOWS SETTINGS
+                // ------------------------------------------------------------
+                if root.active_tab == 3 : VerticalLayout {
+                    spacing: 10px;
+
+                    Text {
+                        text: "System Commands & Windows Settings";
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: root.theme_text_primary;
+                    }
+
+                    // Custom Command & Custom Setting Add Row
+                    SettingCard {
+                        card-bg: root.theme_card_bg; border-col: root.theme_border;
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 6px;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                FlatInput {
+                                    width: 145px; text <=> root.new_cmd_name; placeholder: "Cmd Name";
+                                    surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                                }
+                                FlatInput {
+                                    horizontal-stretch: 1; text <=> root.new_cmd_val; placeholder: "Shell command (e.g. ipconfig /all)";
+                                    surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                                }
+                                ActionBtn {
+                                    label: "+ Cmd"; primary: true; accent: root.theme_accent;
+                                    clicked => {
+                                        root.add_custom_cmd(root.new_cmd_name, root.new_cmd_val);
+                                        root.new_cmd_name = ""; root.new_cmd_val = "";
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                FlatInput {
+                                    width: 145px; text <=> root.new_set_name; placeholder: "Setting Name";
+                                    surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                                }
+                                FlatInput {
+                                    horizontal-stretch: 1; text <=> root.new_set_val; placeholder: "URI (e.g. ms-settings:OptionalFeatures)";
+                                    surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                                }
+                                ActionBtn {
+                                    label: "+ Setting"; primary: true; accent: root.theme_accent;
+                                    clicked => {
+                                        root.add_custom_setting(root.new_set_name, root.new_set_val);
+                                        root.new_set_name = ""; root.new_set_val = "";
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    FlatInput {
+                        text <=> root.builtin_filter_text;
+                        placeholder: "Filter built-in commands & Windows settings...";
+                        surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                        accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                        edited(t) => { root.builtin_filter_changed(t); }
+                    }
+
+                    HorizontalLayout {
+                        vertical-stretch: 1;
+                        spacing: 10px;
+
+                        // Left: System Commands
+                        SettingCard {
+                            horizontal-stretch: 1;
+                            card-bg: root.theme_card_bg; border-col: root.theme_border;
+                            ScrollView {
+                                width: 100%; height: 100%;
+                                viewport-height: (root.custom_cmd_entries.length + root.builtin_cmd_entries.length) * 38px;
+                                VerticalLayout {
+                                    padding: 8px; spacing: 4px;
+                                    for c[idx] in root.custom_cmd_entries : Rectangle {
+                                        height: 32px; border-radius: 5px; background: root.theme_surface_bg;
+                                        HorizontalLayout {
+                                            padding-left: 8px; padding-right: 6px; spacing: 6px; alignment: center;
+                                            Text { text: c.name; font-size: 11.5px; font-weight: 600; color: root.theme_accent; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+                                            ActionBtn { label: "✕"; danger: true; border-col: root.theme_border; clicked => { root.remove_custom_cmd(idx); } }
+                                        }
+                                    }
+                                    for item in root.builtin_cmd_entries : Rectangle {
+                                        height: 32px; border-radius: 5px; background: root.theme_surface_bg;
+                                        HorizontalLayout {
+                                            padding-left: 8px; padding-right: 8px; spacing: 6px; alignment: center;
+                                            Text { text: item.title; font-size: 11.5px; color: root.theme_text_primary; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+                                            PillSwitch {
+                                                checked: item.enabled;
+                                                accent: root.theme_accent; surface-bg: root.theme_card_bg; border-col: root.theme_border;
+                                                toggled(v) => { root.toggle_builtin_cmd(item.id, v); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Right: Windows Settings
+                        SettingCard {
+                            horizontal-stretch: 1;
+                            card-bg: root.theme_card_bg; border-col: root.theme_border;
+                            ScrollView {
+                                width: 100%; height: 100%;
+                                viewport-height: (root.custom_setting_entries.length + root.builtin_setting_entries.length) * 38px;
+                                VerticalLayout {
+                                    padding: 8px; spacing: 4px;
+                                    for s[idx] in root.custom_setting_entries : Rectangle {
+                                        height: 32px; border-radius: 5px; background: root.theme_surface_bg;
+                                        HorizontalLayout {
+                                            padding-left: 8px; padding-right: 6px; spacing: 6px; alignment: center;
+                                            Text { text: s.name; font-size: 11.5px; font-weight: 600; color: root.theme_accent; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+                                            ActionBtn { label: "✕"; danger: true; border-col: root.theme_border; clicked => { root.remove_custom_setting(idx); } }
+                                        }
+                                    }
+                                    for item in root.builtin_setting_entries : Rectangle {
+                                        height: 32px; border-radius: 5px; background: root.theme_surface_bg;
+                                        HorizontalLayout {
+                                            padding-left: 8px; padding-right: 8px; spacing: 6px; alignment: center;
+                                            Text { text: item.title; font-size: 11.5px; color: root.theme_text_primary; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+                                            PillSwitch {
+                                                checked: item.enabled;
+                                                accent: root.theme_accent; surface-bg: root.theme_card_bg; border-col: root.theme_border;
+                                                toggled(v) => { root.toggle_builtin_setting(item.id, v); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ------------------------------------------------------------
+                // TAB 4: APPS & CUSTOM FILE SCAN FOLDERS
+                // ------------------------------------------------------------
+                if root.active_tab == 4 : VerticalLayout {
+                    spacing: 10px;
+
+                    Text {
+                        text: "Applications & Custom Scan Folders";
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: root.theme_text_primary;
+                    }
+
+                    // Custom Scan Folders Card
+                    SettingCard {
+                        card-bg: root.theme_card_bg; border-col: root.theme_border;
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 6px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                FlatInput {
+                                    horizontal-stretch: 1;
+                                    text <=> root.new_folder_input;
+                                    placeholder: "Add folder to index (e.g. C:\\Projects)";
+                                    surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                                    accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                                }
+                                ActionBtn {
+                                    label: "+ Add Folder"; primary: true; accent: root.theme_accent;
+                                    clicked => {
+                                        root.add_scan_folder(root.new_folder_input);
+                                        root.new_folder_input = "";
+                                    }
+                                }
+                            }
+
+                            for folder[idx] in root.folder_entries : Rectangle {
+                                height: 30px; border-radius: 5px; background: root.theme_surface_bg;
+                                HorizontalLayout {
+                                    padding-left: 10px; padding-right: 6px; spacing: 8px; alignment: center;
+                                    Text { text: folder; font-size: 11.5px; color: root.theme_text_primary; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+                                    ActionBtn { label: "Remove"; danger: true; border-col: root.theme_border; clicked => { root.remove_scan_folder(idx); } }
+                                }
+                            }
+                        }
+                    }
+
+                    FlatInput {
+                        text <=> root.app_filter_text;
+                        placeholder: "Filter indexed Start Menu applications...";
+                        surface-bg: root.theme_surface_bg; border-col: root.theme_border;
+                        accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                        edited(t) => { root.app_filter_changed(t); }
+                    }
+
+                    SettingCard {
+                        vertical-stretch: 1;
+                        card-bg: root.theme_card_bg; border-col: root.theme_border;
+                        ScrollView {
+                            width: 100%; height: 100%;
+                            viewport-height: root.app_entries.length * 38px;
+                            VerticalLayout {
+                                padding: 8px; spacing: 4px;
+                                for app in root.app_entries : Rectangle {
+                                    height: 34px; border-radius: 5px; background: root.theme_surface_bg;
+                                    HorizontalLayout {
+                                        padding-left: 10px; padding-right: 10px; spacing: 10px; alignment: center;
+                                        Text { text: app.name; font-size: 12px; color: root.theme_text_primary; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+                                        PillSwitch {
+                                            checked: app.visible;
+                                            accent: root.theme_accent; surface-bg: root.theme_card_bg; border-col: root.theme_border;
+                                            toggled(v) => { root.toggle_app_visibility(app.name, v); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ------------------------------------------------------------
+                // TAB 5: APPEARANCE & SHELL PATHS
+                // ------------------------------------------------------------
+                if root.active_tab == 5 : ScrollView {
+                    width: 100%; height: 100%;
+                    VerticalLayout {
+                        spacing: 12px;
+                        padding-right: 6px;
+
+                        Text {
+                            text: "Appearance & Paths";
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: root.theme_text_primary;
+                        }
+
+                        SettingCard {
+                            card-bg: root.theme_card_bg; border-col: root.theme_border;
+                            VerticalLayout {
+                                padding: 12px; spacing: 10px;
+                                Text { text: "Color Theme"; font-size: 12.5px; font-weight: 600; color: root.theme_text_primary; }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    ActionBtn {
+                                        label: "Fluent Dark (Default)"; primary: root.theme_mode != "custom";
+                                        accent: root.theme_accent; surface-bg: root.theme_surface_bg; selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                        clicked => { root.theme_mode = "powertoys"; root.commit_all(); }
+                                    }
+                                    ActionBtn {
+                                        label: "Custom Hex Colors"; primary: root.theme_mode == "custom";
+                                        accent: root.theme_accent; surface-bg: root.theme_surface_bg; selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                                        clicked => { root.theme_mode = "custom"; root.commit_all(); }
+                                    }
+                                }
+
+                                if root.theme_mode == "custom" : VerticalLayout {
+                                    spacing: 8px;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text { text: "Window BG"; width: 80px; font-size: 11.5px; color: root.theme_text_muted; vertical-alignment: center; }
+                                        FlatInput { horizontal-stretch: 1; text <=> root.custom_window_bg; surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted; }
+                                        Text { text: "Surface BG"; width: 80px; font-size: 11.5px; color: root.theme_text_muted; vertical-alignment: center; }
+                                        FlatInput { horizontal-stretch: 1; text <=> root.custom_surface_bg; surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted; }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text { text: "Card BG"; width: 80px; font-size: 11.5px; color: root.theme_text_muted; vertical-alignment: center; }
+                                        FlatInput { horizontal-stretch: 1; text <=> root.custom_card_bg; surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted; }
+                                        Text { text: "Selected BG"; width: 80px; font-size: 11.5px; color: root.theme_text_muted; vertical-alignment: center; }
+                                        FlatInput { horizontal-stretch: 1; text <=> root.custom_selected_bg; surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted; }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text { text: "Border"; width: 80px; font-size: 11.5px; color: root.theme_text_muted; vertical-alignment: center; }
+                                        FlatInput { horizontal-stretch: 1; text <=> root.custom_border; surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted; }
+                                        Text { text: "Accent"; width: 80px; font-size: 11.5px; color: root.theme_text_muted; vertical-alignment: center; }
+                                        FlatInput { horizontal-stretch: 1; text <=> root.custom_accent; surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted; }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text { text: "Text Primary"; width: 80px; font-size: 11.5px; color: root.theme_text_muted; vertical-alignment: center; }
+                                        FlatInput { horizontal-stretch: 1; text <=> root.custom_text_primary; surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted; }
+                                        Text { text: "Text Muted"; width: 80px; font-size: 11.5px; color: root.theme_text_muted; vertical-alignment: center; }
+                                        FlatInput { horizontal-stretch: 1; text <=> root.custom_text_muted; surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted; }
+                                    }
+                                }
+                            }
+                        }
+
+                        SettingCard {
+                            card-bg: root.theme_card_bg; border-col: root.theme_border;
+                            VerticalLayout {
+                                padding: 12px; spacing: 8px;
+                                Text { text: "Custom Shell Executable"; font-size: 12.5px; font-weight: 600; color: root.theme_text_primary; }
+                                FlatInput {
+                                    text <=> root.custom_cmd_path;
+                                    placeholder: "cmd.exe";
+                                    surface-bg: root.theme_surface_bg; border-col: root.theme_border; accent: root.theme_accent; text-primary: root.theme_text_primary; text-muted: root.theme_text_muted;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Persistent Bottom Action Bar
+            Rectangle {
+                height: 1px;
+                background: root.theme_border;
             }
 
             HorizontalLayout {
                 height: 32px;
                 spacing: 8px;
+                alignment: end;
 
-                Rectangle {
-                    horizontal-stretch: 1;
-                    border-radius: 6px;
-                    background: root.theme_surface_bg;
-                    border-color: root.theme_border;
-                    border-width: 1px;
-
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        TextInput {
-                            width: 100%; height: 100%;
-                            text <=> root.new_scan_path;
-                            color: root.theme_text_primary;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            single-line: true;
-                        }
-                    }
+                ActionBtn {
+                    label: "Close";
+                    accent: root.theme_accent; surface-bg: root.theme_surface_bg;
+                    selected-bg: root.theme_selected_bg; border-col: root.theme_border; text-primary: root.theme_text_primary;
+                    clicked => { root.close_window(); }
                 }
 
-                Rectangle {
-                    width: 145px;
-                    border-radius: 6px;
-                    background: root.theme_accent;
-
-                    Text {
-                        text: "+ Add Scan Path";
-                        color: #121212;
-                        font-size: 12px;
-                        font-weight: 700;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.add_scan_path(root.new_scan_path);
-                            root.new_scan_path = "";
-                        }
-                    }
-                }
-            }
-
-            Flickable {
-                vertical-stretch: 1;
-
-                VerticalLayout {
-                    spacing: 4px;
-
-                    for scan_path[idx] in root.file_scan_paths : Rectangle {
-                        height: 36px;
-                        border-radius: 6px;
-                        background: root.theme_card_bg;
-                        border-color: root.theme_border;
-                        border-width: 1px;
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 10px;
-
-                            Text {
-                                text: scan_path;
-                                color: root.theme_text_primary;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                            }
-
-                            Rectangle {
-                                width: 68px;
-                                height: 24px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 5px;
-                                background: #442726;
-
-                                Text {
-                                    text: "Remove";
-                                    color: #ff99a4;
-                                    font-size: 11px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.remove_scan_path(idx);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // TAB 5: Extensions Manager (Includes 1-Click Open Guide & 1-Click Open .txt/.md Note File)
-        if root.active_tab == 5 : VerticalLayout {
-            vertical-stretch: 1;
-            spacing: 10px;
-
-            // Built-in Notepad Extension Configuration Card
-            Rectangle {
-                height: 92px;
-                border-radius: 8px;
-                background: root.theme_card_bg;
-                border-color: root.theme_border;
-                border-width: 1px;
-
-                VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Text {
-                            text: "📝 Quick Notepad ('note' Bang) — Selected .txt or .md File:";
-                            color: root.theme_text_primary;
-                            font-size: 13px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
-
-                        if !root.notepad_installed : Rectangle {
-                            width: 170px;
-                            height: 26px;
-                            border-radius: 6px;
-                            background: root.theme_accent;
-
-                            Text {
-                                text: "+ Re-Add 'note' Extension";
-                                color: #121212;
-                                font-size: 11px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.restore_builtin_notepad();
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            width: 185px;
-                            height: 26px;
-                            border-radius: 6px;
-                            background: guide_btn_touch.has-hover ? root.theme_selected_bg : root.theme_surface_bg;
-                            border-color: root.theme_accent;
-                            border-width: 1px;
-
-                            Text {
-                                text: "📖 Open Extensions Guide";
-                                color: root.theme_accent;
-                                font-size: 11px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            guide_btn_touch := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.open_extensions_guide();
-                                }
-                            }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            height: 30px;
-                            border-radius: 6px;
-                            background: root.theme_surface_bg;
-                            border-color: root.theme_border;
-                            border-width: 1px;
-
-                            HorizontalLayout {
-                                padding-left: 10px;
-                                padding-right: 10px;
-                                TextInput {
-                                    width: 100%; height: 100%;
-                                    text <=> root.notepad_file_path;
-                                    color: root.theme_text_primary;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                }
-                            }
-                        }
-
-                        for preset_file in ["notes.md", "notes.txt", "~/Desktop/notes.md"] : Rectangle {
-                            width: 110px;
-                            height: 30px;
-                            border-radius: 6px;
-                            background: root.notepad_file_path == preset_file ? root.theme_selected_bg : root.theme_surface_bg;
-                            border-color: root.theme_border;
-                            border-width: 1px;
-
-                            Text {
-                                text: preset_file;
-                                color: root.theme_text_primary;
-                                font-size: 11px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.notepad_file_path = preset_file;
-                                    root.save_notepad_file_path(preset_file);
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            width: 82px;
-                            height: 30px;
-                            border-radius: 6px;
-                            background: root.theme_accent;
-
-                            Text {
-                                text: "Save File";
-                                color: #121212;
-                                font-size: 11px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.save_notepad_file_path(root.notepad_file_path);
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            width: 125px;
-                            height: 30px;
-                            border-radius: 6px;
-                            background: open_note_touch.has-hover ? root.theme_selected_bg : root.theme_surface_bg;
-                            border-color: root.theme_accent;
-                            border-width: 1px;
-
-                            Text {
-                                text: "📂 Open Note File";
-                                color: root.theme_accent;
-                                font-size: 11px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            open_note_touch := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.open_notepad_file(root.notepad_file_path);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Create / Add a New Extension Card
-            Rectangle {
-                height: 112px;
-                border-radius: 8px;
-                background: root.theme_card_bg;
-                border-color: root.theme_border;
-                border-width: 1px;
-
-                VerticalLayout {
-                    padding: 10px;
-                    spacing: 8px;
-
-                    HorizontalLayout {
-                        spacing: 8px;
-
-                        Text {
-                            text: "Add New Extension — Choose Type:";
-                            color: root.theme_text_primary;
-                            font-size: 12px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-
-                        for kind_opt in ["NotepadFile", "QuickAppendFile", "ShellCommand", "WebTemplate"] : Rectangle {
-                            height: 24px;
-                            horizontal-stretch: 1;
-                            border-radius: 5px;
-                            background: root.new_ext_kind == kind_opt ? root.theme_accent : root.theme_surface_bg;
-                            border-color: root.theme_border;
-                            border-width: 1px;
-
-                            Text {
-                                text: kind_opt;
-                                color: root.new_ext_kind == kind_opt ? #121212 : root.theme_text_primary;
-                                font-size: 11px;
-                                font-weight: root.new_ext_kind == kind_opt ? 700 : 500;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.new_ext_kind = kind_opt;
-                                }
-                            }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-
-                        Rectangle {
-                            width: 155px;
-                            height: 30px;
-                            border-radius: 6px;
-                            background: root.theme_surface_bg;
-                            border-color: root.theme_border;
-                            border-width: 1px;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                Text {
-                                    visible: root.new_ext_name == "";
-                                    text: "Extension Name";
-                                    color: root.theme_text_muted;
-                                    font-size: 11px;
-                                    vertical-alignment: center;
-                                }
-                                TextInput {
-                                    width: 100%; height: 100%;
-                                    text <=> root.new_ext_name;
-                                    color: root.theme_text_primary;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            width: 105px;
-                            height: 30px;
-                            border-radius: 6px;
-                            background: root.theme_surface_bg;
-                            border-color: root.theme_border;
-                            border-width: 1px;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                Text {
-                                    visible: root.new_ext_bang == "";
-                                    text: "Bang (e.g. todo)";
-                                    color: root.theme_text_muted;
-                                    font-size: 11px;
-                                    vertical-alignment: center;
-                                }
-                                TextInput {
-                                    width: 100%; height: 100%;
-                                    text <=> root.new_ext_bang;
-                                    color: root.theme_text_primary;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            height: 30px;
-                            border-radius: 6px;
-                            background: root.theme_surface_bg;
-                            border-color: root.theme_border;
-                            border-width: 1px;
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                Text {
-                                    visible: root.new_ext_target == "";
-                                    text: root.new_ext_kind == "NotepadFile" || root.new_ext_kind == "QuickAppendFile"
-                                        ? "Target .txt/.md path (e.g. todo.md)"
-                                        : "Command or URL template with {q}";
-                                    color: root.theme_text_muted;
-                                    font-size: 11px;
-                                    vertical-alignment: center;
-                                }
-                                TextInput {
-                                    width: 100%; height: 100%;
-                                    text <=> root.new_ext_target;
-                                    color: root.theme_text_primary;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            width: 125px;
-                            height: 30px;
-                            border-radius: 6px;
-                            background: root.theme_accent;
-
-                            Text {
-                                text: "+ Add Extension";
-                                color: #121212;
-                                font-size: 12px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.add_custom_extension(
-                                        root.new_ext_name,
-                                        root.new_ext_bang,
-                                        root.new_ext_kind,
-                                        root.new_ext_target
-                                    );
-                                    root.new_ext_name = "";
-                                    root.new_ext_bang = "";
-                                    root.new_ext_target = "";
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            Text {
-                text: "Installed Extensions (Click '📂 Open File' to open any extension's .txt/.md file directly):";
-                color: root.theme_text_muted;
-                font-size: 11px;
-            }
-
-            Flickable {
-                vertical-stretch: 1;
-
-                VerticalLayout {
-                    spacing: 6px;
-
-                    for ext in root.extension_entries : Rectangle {
-                        height: 48px;
-                        border-radius: 8px;
-                        background: root.theme_card_bg;
-                        border-color: root.theme_border;
-                        border-width: 1px;
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 10px;
-
-                            Text {
-                                text: ext.icon;
-                                font-size: 16px;
-                                vertical-alignment: center;
-                                width: 24px;
-                            }
-
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                alignment: center;
-                                Text {
-                                    text: ext.name + "  [Bang: '" + ext.bang + " ' • " + ext.kind + "]";
-                                    color: root.theme_text_primary;
-                                    font-size: 12px;
-                                    font-weight: 700;
-                                    overflow: elide;
-                                }
-                                Text {
-                                    text: ext.target_meta;
-                                    color: root.theme_text_muted;
-                                    font-size: 11px;
-                                    overflow: elide;
-                                }
-                            }
-
-                            if ext.is_file_backed : Rectangle {
-                                width: 92px;
-                                height: 26px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 6px;
-                                background: row_open_file_touch.has-hover ? root.theme_selected_bg : root.theme_surface_bg;
-                                border-color: root.theme_accent;
-                                border-width: 1px;
-
-                                Text {
-                                    text: "📂 Open File";
-                                    color: root.theme_accent;
-                                    font-size: 11px;
-                                    font-weight: 600;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                row_open_file_touch := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.open_extension_file(ext.target_file);
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                width: 60px;
-                                height: 26px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 13px;
-                                background: ext.enabled ? root.theme_accent : root.theme_selected_bg;
-
-                                Text {
-                                    text: ext.enabled ? "ON" : "OFF";
-                                    color: ext.enabled ? #121212 : root.theme_text_primary;
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.toggle_extension_item(ext.id, !ext.enabled);
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                width: 70px;
-                                height: 26px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 6px;
-                                background: #442726;
-
-                                Text {
-                                    text: "Remove";
-                                    color: #ff99a4;
-                                    font-size: 11px;
-                                    font-weight: 600;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.remove_extension_item(ext.id);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // TAB 6: Default Search Engine & Web Bangs
-        if root.active_tab == 6 : VerticalLayout {
-            vertical-stretch: 1;
-            spacing: 10px;
-
-            Rectangle {
-                height: 125px;
-                border-radius: 8px;
-                background: root.theme_card_bg;
-                border-color: root.theme_border;
-                border-width: 1px;
-
-                VerticalLayout {
-                    padding: 12px;
-                    spacing: 8px;
-
-                    Text {
-                        text: "Default Web Search Engine (Current: " + root.default_search_engine + ")";
-                        color: root.theme_text_primary;
-                        font-size: 13px;
-                        font-weight: 700;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-
-                        for eng in [
-                            { id: "google", label: "Google" },
-                            { id: "duckduckgo", label: "DuckDuckGo" },
-                            { id: "bing", label: "Bing" },
-                            { id: "brave", label: "Brave" },
-                            { id: "startpage", label: "Startpage" },
-                            { id: "perplexity", label: "Perplexity" },
-                            { id: "youtube", label: "YouTube" },
-                            { id: "custom", label: "Custom URL" }
-                        ] : Rectangle {
-                            horizontal-stretch: 1;
-                            height: 28px;
-                            border-radius: 6px;
-                            background: root.default_search_engine == eng.id ? root.theme_accent : root.theme_surface_bg;
-                            border-color: root.theme_border;
-                            border-width: 1px;
-
-                            Text {
-                                text: eng.label;
-                                color: root.default_search_engine == eng.id ? #121212 : root.theme_text_primary;
-                                font-size: 11px;
-                                font-weight: root.default_search_engine == eng.id ? 700 : 500;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.default_search_engine = eng.id;
-                                    root.select_default_search_engine(eng.id);
-                                }
-                            }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-
-                        Text {
-                            text: "Custom URL ({q}):";
-                            color: root.theme_text_muted;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                        }
-
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            height: 28px;
-                            border-radius: 6px;
-                            background: root.theme_surface_bg;
-                            border-color: root.theme_border;
-                            border-width: 1px;
-
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                TextInput {
-                                    width: 100%; height: 100%;
-                                    text <=> root.custom_search_url;
-                                    color: root.theme_text_primary;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            width: 125px;
-                            height: 28px;
-                            border-radius: 6px;
-                            background: root.theme_accent;
-
-                            Text {
-                                text: "Save Custom URL";
-                                color: #121212;
-                                font-size: 11px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.save_custom_search_url(root.custom_search_url);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            HorizontalLayout {
-                height: 34px;
-                spacing: 8px;
-
-                Rectangle {
-                    width: 130px;
-                    border-radius: 6px;
-                    background: root.theme_surface_bg;
-                    border-color: root.theme_border;
-                    border-width: 1px;
-
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        Text {
-                            visible: root.new_bang_trigger == "";
-                            text: "Bang (e.g. yt)";
-                            color: root.theme_text_muted;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                        }
-                        TextInput {
-                            width: 100%; height: 100%;
-                            text <=> root.new_bang_trigger;
-                            color: root.theme_text_primary;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            single-line: true;
-                        }
-                    }
-                }
-
-                Rectangle {
-                    horizontal-stretch: 1;
-                    border-radius: 6px;
-                    background: root.theme_surface_bg;
-                    border-color: root.theme_border;
-                    border-width: 1px;
-
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        Text {
-                            visible: root.new_bang_url == "";
-                            text: "https://example.com/search?q={q}";
-                            color: root.theme_text_muted;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                        }
-                        TextInput {
-                            width: 100%; height: 100%;
-                            text <=> root.new_bang_url;
-                            color: root.theme_text_primary;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            single-line: true;
-                        }
-                    }
-                }
-
-                Rectangle {
-                    width: 120px;
-                    border-radius: 6px;
-                    background: root.theme_accent;
-
-                    Text {
-                        text: "+ Save Bang";
-                        color: #121212;
-                        font-size: 12px;
-                        font-weight: 700;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.add_bang_rule(root.new_bang_trigger, root.new_bang_url);
-                            root.new_bang_trigger = "";
-                            root.new_bang_url = "";
-                        }
-                    }
-                }
-            }
-
-            Flickable {
-                vertical-stretch: 1;
-
-                VerticalLayout {
-                    spacing: 4px;
-
-                    for rule in root.bang_entries : Rectangle {
-                        height: 38px;
-                        border-radius: 6px;
-                        background: root.theme_card_bg;
-                        border-color: root.theme_border;
-                        border-width: 1px;
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 12px;
-
-                            Text {
-                                text: rule.trigger;
-                                color: root.theme_accent;
-                                font-size: 13px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                                width: 80px;
-                            }
-
-                            Text {
-                                text: rule.url_template;
-                                color: root.theme_text_muted;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                            }
-
-                            Rectangle {
-                                width: 68px;
-                                height: 24px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 5px;
-                                background: #442726;
-
-                                Text {
-                                    text: "Remove";
-                                    color: #ff99a4;
-                                    font-size: 11px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.remove_bang_rule(rule.trigger);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                ActionBtn {
+                    label: "Save Changes";
+                    primary: true;
+                    accent: root.theme_accent;
+                    clicked => { root.commit_all(); }
                 }
             }
         }
     }
 }
+

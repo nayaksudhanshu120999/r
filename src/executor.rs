@@ -1,17 +1,21 @@
-use crate::config::AppConfig;
-use crate::extensions::execute_extension_action;
 use crate::models::{CandidateItem, ExecutionOutcome, ExecutionTarget};
+use crate::notes::execute_note_action;
+use crate::system::to_wide_null;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::ptr::{null, null_mut};
+use std::process::Command;
+use std::ptr::{copy_nonoverlapping, null, null_mut};
+use windows_sys::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+};
+use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-const CONFIG_FILE_PATH: &str = "config.toml";
+const CF_UNICODETEXT: u32 = 13;
 
 pub fn open_path_in_default_app(path: &Path) -> io::Result<()> {
     spawn_file_or_app_path(path, false)
@@ -44,7 +48,6 @@ pub fn execute_candidate(
             Ok(ExecutionOutcome::HidePalette)
         }
         ExecutionTarget::FilePath(path) => {
-            // If opening a .txt or .md file that hasn't been created yet, create it first
             if !path.exists() {
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     if ext.eq_ignore_ascii_case("txt") || ext.eq_ignore_ascii_case("md") {
@@ -64,39 +67,10 @@ pub fn execute_candidate(
             copy_text_to_clipboard(text)?;
             Ok(ExecutionOutcome::HidePalette)
         }
-        ExecutionTarget::ToggleStartup(enable) => {
-            let mut cfg = AppConfig::load_or_create(CONFIG_FILE_PATH);
-            cfg.run_on_startup = *enable;
-            cfg.save(CONFIG_FILE_PATH);
-            crate::system::request_config_reload();
-            Ok(ExecutionOutcome::HidePalette)
+        ExecutionTarget::MutateConfig(mutation) => {
+            Ok(ExecutionOutcome::ApplyConfigMutation(mutation.clone()))
         }
-        ExecutionTarget::SetHotkey(new_hotkey) => {
-            let mut cfg = AppConfig::load_or_create(CONFIG_FILE_PATH);
-            cfg.hotkey = new_hotkey.clone();
-            cfg.save(CONFIG_FILE_PATH);
-            crate::system::request_config_reload();
-            Ok(ExecutionOutcome::HidePalette)
-        }
-        ExecutionTarget::SetDefaultSearchEngine(engine_id) => {
-            let mut cfg = AppConfig::load_or_create(CONFIG_FILE_PATH);
-            cfg.default_search_engine = engine_id.clone();
-            cfg.save(CONFIG_FILE_PATH);
-            crate::system::request_config_reload();
-            Ok(ExecutionOutcome::HidePalette)
-        }
-        ExecutionTarget::SwitchTheme(theme_mode) => {
-            let mut cfg = AppConfig::load_or_create(CONFIG_FILE_PATH);
-            cfg.theme = theme_mode.clone();
-            cfg.save(CONFIG_FILE_PATH);
-            crate::system::request_config_reload();
-            Ok(ExecutionOutcome::HidePalette)
-        }
-        ExecutionTarget::ReloadIndex => {
-            crate::system::request_config_reload();
-            Ok(ExecutionOutcome::ReloadAll)
-        }
-        ExecutionTarget::OpenPaletteSettings => Ok(ExecutionOutcome::OpenSettingsTab(0)),
+        ExecutionTarget::ReloadIndex => Ok(ExecutionOutcome::ReloadAll),
         ExecutionTarget::OpenPaletteSettingsTab(tab) => {
             Ok(ExecutionOutcome::OpenSettingsTab(*tab))
         }
@@ -104,8 +78,8 @@ pub fn execute_candidate(
             bang: bang.clone(),
             label: label.clone(),
         }),
-        ExecutionTarget::ExtensionAction(action) => {
-            let keep_open = execute_extension_action(action)?;
+        ExecutionTarget::NoteAction(action) => {
+            let keep_open = execute_note_action(action)?;
             if keep_open {
                 Ok(ExecutionOutcome::KeepOpenAndRefresh { clear_query: true })
             } else {
@@ -116,16 +90,39 @@ pub fn execute_candidate(
     }
 }
 
+/// Zero-process native Win32 UTF-16 clipboard copy (eliminates `clip.exe` spawn & handle leaks).
 fn copy_text_to_clipboard(text: &str) -> io::Result<()> {
-    let mut child = Command::new("clip.exe")
-        .stdin(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()?;
+    let wide = to_wide_null(text);
+    let byte_len = wide.len() * std::mem::size_of::<u16>();
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(text.as_bytes())?;
+    unsafe {
+        if OpenClipboard(null_mut()) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let _ = EmptyClipboard();
+
+        let hmem = GlobalAlloc(GMEM_MOVEABLE, byte_len);
+        if hmem.is_null() {
+            let _ = CloseClipboard();
+            return Err(io::Error::last_os_error());
+        }
+
+        let locked = GlobalLock(hmem) as *mut u16;
+        if locked.is_null() {
+            let _ = CloseClipboard();
+            return Err(io::Error::last_os_error());
+        }
+
+        copy_nonoverlapping(wide.as_ptr(), locked, wide.len());
+        let _ = GlobalUnlock(hmem);
+
+        if SetClipboardData(CF_UNICODETEXT, hmem).is_null() {
+            let _ = CloseClipboard();
+            return Err(io::Error::last_os_error());
+        }
+
+        let _ = CloseClipboard();
     }
-    let _ = child.wait();
     Ok(())
 }
 
@@ -155,19 +152,21 @@ fn spawn_custom_command(
             escape_ps_single_quoted(shell),
             escape_ps_single_quoted(trimmed)
         );
-        Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-Command",
-                &ps_command,
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()?;
+        drop(
+            Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    &ps_command,
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()?,
+        );
     } else {
-        Command::new(shell).args(["/C", trimmed]).spawn()?;
+        drop(Command::new(shell).args(["/C", trimmed]).spawn()?);
     }
 
     Ok(())
@@ -195,24 +194,26 @@ fn spawn_system_process(program: &str, args: &[String], run_as_admin: bool) -> i
             )
         };
 
-        Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-Command",
-                &ps_command,
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()?;
+        drop(
+            Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    &ps_command,
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()?,
+        );
     } else {
         let mut cmd = Command::new(trimmed_prog);
         cmd.args(args);
         if should_hide_console(trimmed_prog) {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        cmd.spawn()?;
+        drop(cmd.spawn()?);
     }
 
     Ok(())
@@ -232,10 +233,26 @@ fn spawn_settings_target(uri_or_path: &str) -> io::Result<()> {
 }
 
 fn spawn_shell_url(url_or_uri: &str) -> io::Result<()> {
-    Command::new("cmd.exe")
-        .args(["/C", "start", "", url_or_uri])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()?;
+    let url_w = to_wide_null(url_or_uri);
+    let verb_w = to_wide_null("open");
+    let result = unsafe {
+        ShellExecuteW(
+            null_mut(),
+            verb_w.as_ptr(),
+            url_w.as_ptr(),
+            null(),
+            null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if (result as isize) <= 32 {
+        drop(
+            Command::new("cmd.exe")
+                .args(["/C", "start", "", url_or_uri])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()?,
+        );
+    }
     Ok(())
 }
 
@@ -270,24 +287,22 @@ fn spawn_file_or_app_path(path: &Path, run_as_admin: bool) -> io::Result<()> {
             )
         };
 
-        Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-Command",
-                &ps_command,
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()?;
+        drop(
+            Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    &ps_command,
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()?,
+        );
     }
 
     Ok(())
-}
-
-fn to_wide_null(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 fn should_hide_console(program: &str) -> bool {

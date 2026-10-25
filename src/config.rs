@@ -1,65 +1,10 @@
-use crate::extensions::{
-    load_external_extension_manifests, ExtensionEntry, BUILTIN_NOTEPAD_ID,
-};
 use crate::models::ShelfCategory;
+use crate::system::normalize_hotkey_str;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashSet};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-
-const DEFAULT_CONFIG_TOML: &str = r##"show_apps = true
-run_on_startup = false
-hotkey = "Ctrl+Space"
-theme = "powertoys"
-enable_cmdpal_shortcuts = true
-enable_builtin_cmds = true
-enable_builtin_settings = true
-disabled_builtin_cmds = []
-disabled_builtin_settings = []
-default_search_engine = "google"
-custom_search_url = "https://www.google.com/search?q={q}"
-custom_cmd_path = "cmd.exe"
-custom_system_settings_path = "ms-settings:"
-category_order = ["Extensions", "CmdPal", "Cmds", "Settings", "Apps", "Files", "Web"]
-hidden_apps = []
-custom_file_scan_paths = []
-custom_commands = []
-custom_settings = []
-removed_builtin_extensions = []
-
-[custom_theme]
-window_bg = "#1f1f1f"
-surface_bg = "#2b2b2b"
-card_bg = "#282828"
-selected_bg = "#383838"
-border = "#3d3d3d"
-accent = "#60cdff"
-text_primary = "#ffffff"
-text_muted = "#9d9d9d"
-
-[bangs]
-yt = "https://www.youtube.com/results?search_query={q}"
-g = "https://www.google.com/search?q={q}"
-ddg = "https://duckduckgo.com/?q={q}"
-gh = "https://github.com/search?q={q}"
-rs = "https://docs.rs/releases/search?query={q}"
-crates = "https://crates.io/search?q={q}"
-wiki = "https://en.wikipedia.org/w/index.php?search={q}"
-so = "https://stackoverflow.com/search?q={q}"
-r = "https://www.reddit.com/search/?q={q}"
-maps = "https://www.google.com/maps/search/{q}"
-
-[[extensions]]
-id = "notepad"
-name = "Quick Notepad & File Viewer"
-description = "Use bang 'note' to save text to a .txt or .md file and view file contents in the palette"
-bang = "note"
-icon = "📝"
-enabled = true
-kind = "NotepadFile"
-target_file = "notes.md"
-command_template = ""
-"##;
 
 fn default_true() -> bool {
     true
@@ -91,13 +36,69 @@ fn default_settings_path() -> String {
 
 fn default_category_order() -> Vec<String> {
     ShelfCategory::all_default_order()
-        .iter()
+        .into_iter()
         .map(|c| c.as_str().to_string())
         .collect()
 }
 
-fn default_extensions() -> Vec<ExtensionEntry> {
-    vec![ExtensionEntry::builtin_notepad()]
+fn default_notes() -> Vec<NoteBangItem> {
+    vec![
+        NoteBangItem {
+            bang: "note".to_string(),
+            name: "Quick Notes".to_string(),
+            file_path: "notes.md".to_string(),
+        },
+        NoteBangItem {
+            bang: "todo".to_string(),
+            name: "To-Do List".to_string(),
+            file_path: "todo.txt".to_string(),
+        },
+    ]
+}
+
+fn default_bangs() -> BTreeMap<String, String> {
+    let mut bangs = BTreeMap::new();
+    bangs.insert(
+        "yt".to_string(),
+        "https://www.youtube.com/results?search_query={q}".to_string(),
+    );
+    bangs.insert(
+        "g".to_string(),
+        "https://www.google.com/search?q={q}".to_string(),
+    );
+    bangs.insert(
+        "ddg".to_string(),
+        "https://duckduckgo.com/?q={q}".to_string(),
+    );
+    bangs.insert(
+        "gh".to_string(),
+        "https://github.com/search?q={q}".to_string(),
+    );
+    bangs.insert(
+        "rs".to_string(),
+        "https://docs.rs/releases/search?query={q}".to_string(),
+    );
+    bangs.insert(
+        "crates".to_string(),
+        "https://crates.io/search?q={q}".to_string(),
+    );
+    bangs.insert(
+        "wiki".to_string(),
+        "https://en.wikipedia.org/w/index.php?search={q}".to_string(),
+    );
+    bangs.insert(
+        "so".to_string(),
+        "https://stackoverflow.com/search?q={q}".to_string(),
+    );
+    bangs.insert(
+        "r".to_string(),
+        "https://www.reddit.com/search/?q={q}".to_string(),
+    );
+    bangs.insert(
+        "maps".to_string(),
+        "https://www.google.com/maps/search/{q}".to_string(),
+    );
+    bangs
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -137,6 +138,13 @@ pub struct CustomCommandItem {
 pub struct CustomSettingItem {
     pub name: String,
     pub path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NoteBangItem {
+    pub bang: String,
+    pub name: String,
+    pub file_path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -182,18 +190,15 @@ pub struct AppConfig {
     pub custom_commands: Vec<CustomCommandItem>,
     #[serde(default)]
     pub custom_settings: Vec<CustomSettingItem>,
-    #[serde(default)]
-    pub bangs: HashMap<String, String>,
-
-    #[serde(default = "default_extensions")]
-    pub extensions: Vec<ExtensionEntry>,
-    #[serde(default)]
-    pub removed_builtin_extensions: Vec<String>,
+    #[serde(default = "default_bangs")]
+    pub bangs: BTreeMap<String, String>,
+    #[serde(default = "default_notes")]
+    pub notes: Vec<NoteBangItem>,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
-        toml::from_str(DEFAULT_CONFIG_TOML).unwrap_or(Self {
+        Self {
             show_apps: true,
             run_on_startup: false,
             hotkey: default_hotkey(),
@@ -213,46 +218,46 @@ impl Default for AppConfig {
             custom_file_scan_paths: Vec::new(),
             custom_commands: Vec::new(),
             custom_settings: Vec::new(),
-            bangs: HashMap::new(),
-            extensions: default_extensions(),
-            removed_builtin_extensions: Vec::new(),
-        })
+            bangs: default_bangs(),
+            notes: default_notes(),
+        }
     }
 }
 
 impl AppConfig {
-    pub fn resolve_config_path<P: AsRef<Path>>(path: P) -> PathBuf {
-        let p = path.as_ref();
-        if p.is_absolute() || p.exists() {
-            return p.to_path_buf();
+    pub fn resolve_config_path(rel_path: &str) -> PathBuf {
+        let candidate = PathBuf::from(rel_path);
+        if candidate.is_absolute() || candidate.exists() {
+            return candidate;
         }
-        if let Ok(exe) = std::env::current_exe() {
+        if let Ok(exe) = env::current_exe() {
             if let Some(dir) = exe.parent() {
-                return dir.join(p);
+                return dir.join(rel_path);
             }
         }
-        p.to_path_buf()
+        candidate
     }
 
     pub fn load_or_create<P: AsRef<Path>>(path: P) -> Self {
-        let resolved = Self::resolve_config_path(path);
-
-        if !resolved.exists() {
-            let _ = fs::write(&resolved, DEFAULT_CONFIG_TOML);
+        let resolved = Self::resolve_config_path(&path.as_ref().to_string_lossy());
+        if let Ok(raw) = fs::read_to_string(&resolved) {
+            if let Ok(mut parsed) = toml::from_str::<AppConfig>(&raw) {
+                parsed.normalize();
+                return parsed;
+            }
         }
 
-        let raw_content =
-            fs::read_to_string(&resolved).unwrap_or_else(|_| DEFAULT_CONFIG_TOML.to_string());
-
-        let mut parsed: AppConfig = toml::from_str(&raw_content).unwrap_or_default();
-        parsed.normalize();
-        crate::system::apply_runtime_system_config(parsed.run_on_startup, &parsed.hotkey);
-        parsed
+        let mut cfg = Self::default();
+        cfg.normalize();
+        if let Ok(serialized) = toml::to_string_pretty(&cfg) {
+            let _ = fs::write(&resolved, serialized);
+        }
+        cfg
     }
 
     pub fn save<P: AsRef<Path>>(&mut self, path: P) {
         self.normalize();
-        let resolved = Self::resolve_config_path(path);
+        let resolved = Self::resolve_config_path(&path.as_ref().to_string_lossy());
         if let Ok(serialized) = toml::to_string_pretty(self) {
             let _ = fs::write(resolved, serialized);
         }
@@ -260,270 +265,203 @@ impl AppConfig {
     }
 
     pub fn normalize(&mut self) {
-        self.hotkey = crate::system::normalize_hotkey_str(&self.hotkey);
+        self.hotkey = normalize_hotkey_str(&self.hotkey);
 
-        self.bangs = self
-            .bangs
-            .drain()
-            .filter(|(k, v)| !k.trim().is_empty() && !v.trim().is_empty())
-            .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
-            .collect();
-
-        let t = self.theme.trim().to_ascii_lowercase();
-        self.theme = if t == "custom" {
+        let theme_lower = self.theme.trim().to_ascii_lowercase();
+        self.theme = if theme_lower == "custom" {
             "custom".to_string()
         } else {
             "powertoys".to_string()
         };
 
-        let engine_norm = self.default_search_engine.trim().to_ascii_lowercase();
-        self.default_search_engine = match engine_norm.as_str() {
-            "google" | "duckduckgo" | "ddg" | "bing" | "brave" | "startpage" | "perplexity"
-            | "youtube" | "custom" => {
-                if engine_norm == "ddg" {
-                    "duckduckgo".to_string()
-                } else {
-                    engine_norm
-                }
-            }
+        let engine_lower = self.default_search_engine.trim().to_ascii_lowercase();
+        self.default_search_engine = match engine_lower.as_str() {
+            "google" | "duckduckgo" | "bing" | "brave" | "startpage" | "perplexity"
+            | "youtube" | "custom" => engine_lower,
             _ => "google".to_string(),
         };
 
-        if self.custom_search_url.trim().is_empty() {
+        if self.custom_search_url.trim().is_empty() || !self.custom_search_url.contains("{q}") {
             self.custom_search_url = default_custom_search_url();
-        } else {
-            self.custom_search_url = self.custom_search_url.trim().to_string();
         }
-
         if self.custom_cmd_path.trim().is_empty() {
             self.custom_cmd_path = default_cmd_path();
-        } else {
-            self.custom_cmd_path = self.custom_cmd_path.trim().to_string();
         }
-
         if self.custom_system_settings_path.trim().is_empty() {
             self.custom_system_settings_path = default_settings_path();
-        } else {
-            self.custom_system_settings_path = self.custom_system_settings_path.trim().to_string();
         }
 
+        // Normalize shelf order
+        let mut seen_cats = HashSet::new();
         let mut ordered = Vec::with_capacity(7);
-        for item in &self.category_order {
-            let cat = ShelfCategory::from_label(item).as_str().to_string();
-            if !ordered.contains(&cat) {
-                ordered.push(cat);
+        for label in &self.category_order {
+            if let Some(cat) = ShelfCategory::from_label(label) {
+                if seen_cats.insert(cat) {
+                    ordered.push(cat.as_str().to_string());
+                }
             }
         }
-        for fallback in ShelfCategory::all_default_order() {
-            let s = fallback.as_str().to_string();
-            if !ordered.contains(&s) {
-                ordered.push(s);
+        for cat in ShelfCategory::all_default_order() {
+            if seen_cats.insert(cat) {
+                ordered.push(cat.as_str().to_string());
             }
         }
         self.category_order = ordered;
 
-        // Ensure built-in notepad extension is present unless user explicitly removed it
-        let notepad_removed = self
-            .removed_builtin_extensions
-            .iter()
-            .any(|id| id.eq_ignore_ascii_case(BUILTIN_NOTEPAD_ID));
-        let has_notepad = self
-            .extensions
-            .iter()
-            .any(|e| e.id.eq_ignore_ascii_case(BUILTIN_NOTEPAD_ID));
-        if !notepad_removed && !has_notepad {
-            self.extensions.insert(0, ExtensionEntry::builtin_notepad());
-        }
+        // Deduplicate & lowercase toggle lists
+        Self::dedup_lowercase_vec(&mut self.hidden_apps);
+        Self::dedup_lowercase_vec(&mut self.disabled_builtin_cmds);
+        Self::dedup_lowercase_vec(&mut self.disabled_builtin_settings);
 
-        // Merge any external `./extensions/*.toml` manifests not yet in `self.extensions`
-        for ext_manifest in load_external_extension_manifests() {
-            let already_exists = self
-                .extensions
-                .iter()
-                .any(|e| e.id.eq_ignore_ascii_case(&ext_manifest.id));
-            if !already_exists {
-                self.extensions.push(ext_manifest);
+        // Normalize web bangs
+        let mut clean_bangs = BTreeMap::new();
+        for (k, v) in &self.bangs {
+            let key = k.trim().trim_start_matches('!').to_ascii_lowercase();
+            let val = v.trim().to_string();
+            if !key.is_empty() && !key.contains(char::is_whitespace) && val.contains("{q}") {
+                clean_bangs.insert(key, val);
             }
         }
+        self.bangs = clean_bangs;
 
-        for ext in &mut self.extensions {
-            ext.id = ext.id.trim().to_string();
-            ext.name = ext.name.trim().to_string();
-            ext.bang = ext
-                .bang
-                .trim()
-                .trim_start_matches('!')
-                .to_ascii_lowercase();
-            if ext.icon.trim().is_empty() {
-                ext.icon = "🧩".to_string();
+        // Normalize note bangs (multiple text files with distinct bangs)
+        let mut clean_notes = Vec::new();
+        let mut seen_note_bangs = HashSet::new();
+        for item in &self.notes {
+            let bang = item.bang.trim().trim_start_matches('!').to_ascii_lowercase();
+            let file_path = item.file_path.trim().trim_matches('"').to_string();
+            if bang.is_empty() || bang.contains(char::is_whitespace) || file_path.is_empty() {
+                continue;
             }
-            if ext.id.eq_ignore_ascii_case(BUILTIN_NOTEPAD_ID) && ext.target_file.trim().is_empty()
-            {
-                ext.target_file = "notes.md".to_string();
-            }
-        }
-        self.extensions
-            .retain(|e| !e.id.is_empty() && !e.name.is_empty() && !e.bang.is_empty());
-
-        let mut clean_hidden = Vec::new();
-        for app in &self.hidden_apps {
-            let trimmed = app.trim();
-            if !trimmed.is_empty()
-                && !clean_hidden
-                    .iter()
-                    .any(|h: &String| h.eq_ignore_ascii_case(trimmed))
-            {
-                clean_hidden.push(trimmed.to_string());
+            let normalized_path = if Path::new(&file_path).extension().is_none() {
+                format!("{}.md", file_path)
+            } else {
+                file_path
+            };
+            let name = if item.name.trim().is_empty() {
+                format!("Notes ({})", normalized_path)
+            } else {
+                item.name.trim().to_string()
+            };
+            if seen_note_bangs.insert(bang.clone()) {
+                clean_notes.push(NoteBangItem {
+                    bang,
+                    name,
+                    file_path: normalized_path,
+                });
             }
         }
-        self.hidden_apps = clean_hidden;
+        self.notes = clean_notes;
+    }
 
-        let mut clean_scans = Vec::new();
-        for path in &self.custom_file_scan_paths {
-            let trimmed = path.trim();
-            if !trimmed.is_empty()
-                && !clean_scans
-                    .iter()
-                    .any(|p: &String| p.eq_ignore_ascii_case(trimmed))
-            {
-                clean_scans.push(trimmed.to_string());
+    fn dedup_lowercase_vec(vec: &mut Vec<String>) {
+        let mut seen = HashSet::new();
+        let mut out = Vec::with_capacity(vec.len());
+        for s in vec.iter() {
+            let lower = s.trim().to_ascii_lowercase();
+            if !lower.is_empty() && seen.insert(lower.clone()) {
+                out.push(lower);
             }
         }
-        self.custom_file_scan_paths = clean_scans;
-
-        self.custom_commands
-            .retain(|c| !c.name.trim().is_empty() && !c.command.trim().is_empty());
-        self.custom_settings
-            .retain(|s| !s.name.trim().is_empty() && !s.path.trim().is_empty());
+        *vec = out;
     }
 
     pub fn ordered_categories(&self) -> Vec<ShelfCategory> {
         self.category_order
             .iter()
-            .map(|s| ShelfCategory::from_label(s))
+            .filter_map(|s| ShelfCategory::from_label(s))
             .collect()
     }
 
-    pub fn is_app_hidden(&self, app_name: &str) -> bool {
-        self.hidden_apps
-            .iter()
-            .any(|h| h.eq_ignore_ascii_case(app_name.trim()))
+    pub fn is_app_hidden(&self, app_name_lower: &str) -> bool {
+        self.hidden_apps.iter().any(|h| h == app_name_lower)
     }
 
     pub fn set_app_visibility(&mut self, app_name: &str, visible: bool) {
-        let trimmed = app_name.trim();
-        self.hidden_apps.retain(|h| !h.eq_ignore_ascii_case(trimmed));
-        if !visible && !trimmed.is_empty() {
-            self.hidden_apps.push(trimmed.to_string());
+        let lower = app_name.trim().to_ascii_lowercase();
+        self.hidden_apps.retain(|h| h != &lower);
+        if !visible {
+            self.hidden_apps.push(lower);
         }
     }
 
     pub fn is_builtin_cmd_enabled(&self, id: &str) -> bool {
-        self.enable_builtin_cmds
-            && !self
-                .disabled_builtin_cmds
-                .iter()
-                .any(|d| d.eq_ignore_ascii_case(id))
+        if !self.enable_builtin_cmds {
+            return false;
+        }
+        !self.disabled_builtin_cmds.iter().any(|d| d == id)
     }
 
     pub fn set_builtin_cmd_enabled(&mut self, id: &str, enabled: bool) {
-        self.disabled_builtin_cmds
-            .retain(|d| !d.eq_ignore_ascii_case(id));
+        let lower = id.trim().to_ascii_lowercase();
+        self.disabled_builtin_cmds.retain(|d| d != &lower);
         if !enabled {
-            self.disabled_builtin_cmds.push(id.to_string());
+            self.disabled_builtin_cmds.push(lower);
         }
     }
 
     pub fn is_builtin_setting_enabled(&self, id: &str) -> bool {
-        self.enable_builtin_settings
-            && !self
-                .disabled_builtin_settings
-                .iter()
-                .any(|d| d.eq_ignore_ascii_case(id))
+        if !self.enable_builtin_settings {
+            return false;
+        }
+        !self.disabled_builtin_settings.iter().any(|d| d == id)
     }
 
     pub fn set_builtin_setting_enabled(&mut self, id: &str, enabled: bool) {
-        self.disabled_builtin_settings
-            .retain(|d| !d.eq_ignore_ascii_case(id));
+        let lower = id.trim().to_ascii_lowercase();
+        self.disabled_builtin_settings.retain(|d| d != &lower);
         if !enabled {
-            self.disabled_builtin_settings.push(id.to_string());
+            self.disabled_builtin_settings.push(lower);
         }
     }
 
-    pub fn resolve_default_search_engine(&self) -> (&'static str, String) {
+    pub fn resolve_default_search_engine(&self) -> (&'static str, &str) {
         match self.default_search_engine.as_str() {
-            "duckduckgo" => ("DuckDuckGo", "https://duckduckgo.com/?q={q}".to_string()),
-            "bing" => ("Bing", "https://www.bing.com/search?q={q}".to_string()),
-            "brave" => (
-                "Brave Search",
-                "https://search.brave.com/search?q={q}".to_string(),
-            ),
-            "startpage" => (
-                "Startpage",
-                "https://www.startpage.com/do/dsearch?query={q}".to_string(),
-            ),
-            "perplexity" => (
-                "Perplexity",
-                "https://www.perplexity.ai/search?q={q}".to_string(),
-            ),
+            "duckduckgo" => ("DuckDuckGo", "https://duckduckgo.com/?q={q}"),
+            "bing" => ("Bing", "https://www.bing.com/search?q={q}"),
+            "brave" => ("Brave Search", "https://search.brave.com/search?q={q}"),
+            "startpage" => ("Startpage", "https://www.startpage.com/do/dsearch?query={q}"),
+            "perplexity" => ("Perplexity", "https://www.perplexity.ai/search?q={q}"),
             "youtube" => (
                 "YouTube",
-                "https://www.youtube.com/results?search_query={q}".to_string(),
+                "https://www.youtube.com/results?search_query={q}",
             ),
-            "custom" => ("Custom Search", self.custom_search_url.clone()),
-            _ => ("Google", "https://www.google.com/search?q={q}".to_string()),
+            "custom" => ("Custom Search", self.custom_search_url.as_str()),
+            _ => ("Google", "https://www.google.com/search?q={q}"),
         }
     }
 
-    pub fn notepad_extension(&self) -> Option<&ExtensionEntry> {
-        self.extensions
-            .iter()
-            .find(|e| e.id.eq_ignore_ascii_case(BUILTIN_NOTEPAD_ID))
-    }
-
-    pub fn set_notepad_file_path(&mut self, new_path: &str) {
-        let clean = new_path.trim();
-        if clean.is_empty() {
-            return;
-        }
-        if let Some(ext) = self
-            .extensions
-            .iter_mut()
-            .find(|e| e.id.eq_ignore_ascii_case(BUILTIN_NOTEPAD_ID))
+    pub fn upsert_note_bang(&mut self, bang: &str, name: &str, file_path: &str) -> bool {
+        let clean_bang = bang.trim().trim_start_matches('!').to_ascii_lowercase();
+        let clean_file = file_path.trim().trim_matches('"');
+        if clean_bang.is_empty()
+            || clean_bang.contains(char::is_whitespace)
+            || clean_file.is_empty()
         {
-            ext.target_file = clean.to_string();
+            return false;
+        }
+        let clean_name = if name.trim().is_empty() {
+            format!("Notes ({})", clean_file)
         } else {
-            let mut np = ExtensionEntry::builtin_notepad();
-            np.target_file = clean.to_string();
-            self.removed_builtin_extensions
-                .retain(|id| !id.eq_ignore_ascii_case(BUILTIN_NOTEPAD_ID));
-            self.extensions.insert(0, np);
+            name.trim().to_string()
+        };
+
+        if let Some(existing) = self.notes.iter_mut().find(|n| n.bang == clean_bang) {
+            existing.name = clean_name;
+            existing.file_path = clean_file.to_string();
+        } else {
+            self.notes.push(NoteBangItem {
+                bang: clean_bang,
+                name: clean_name,
+                file_path: clean_file.to_string(),
+            });
         }
+        self.normalize();
+        true
     }
 
-    pub fn remove_extension_by_id(&mut self, id: &str) {
-        if id.eq_ignore_ascii_case(BUILTIN_NOTEPAD_ID) {
-            if !self
-                .removed_builtin_extensions
-                .iter()
-                .any(|r| r.eq_ignore_ascii_case(BUILTIN_NOTEPAD_ID))
-            {
-                self.removed_builtin_extensions
-                    .push(BUILTIN_NOTEPAD_ID.to_string());
-            }
-        }
-        self.extensions.retain(|e| !e.id.eq_ignore_ascii_case(id));
-    }
-
-    pub fn restore_builtin_notepad(&mut self) {
-        self.removed_builtin_extensions
-            .retain(|id| !id.eq_ignore_ascii_case(BUILTIN_NOTEPAD_ID));
-        if !self
-            .extensions
-            .iter()
-            .any(|e| e.id.eq_ignore_ascii_case(BUILTIN_NOTEPAD_ID))
-        {
-            self.extensions.insert(0, ExtensionEntry::builtin_notepad());
-        }
+    pub fn remove_note_bang(&mut self, bang: &str) {
+        let clean_bang = bang.trim().trim_start_matches('!').to_ascii_lowercase();
+        self.notes.retain(|n| n.bang != clean_bang);
     }
 }
