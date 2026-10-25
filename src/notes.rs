@@ -5,22 +5,64 @@ use crate::models::{CandidateItem, ExecutionTarget, NoteActionKind, ShelfCategor
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+use std::mem::zeroed;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 const MAX_NOTE_FILE_BYTES: u64 = 2 * 1024 * 1024; // 2 MB cap for inline preview safety
-const MAX_PREVIEW_LINES: usize = 30;
+const MAX_PREVIEW_NOTES: usize = 30;
+const NOTE_SEPARATOR: &str = "----------------------------------------";
+
+#[repr(C)]
+struct Win32SystemTime {
+    w_year: u16,
+    w_month: u16,
+    w_day_of_week: u16,
+    w_day: u16,
+    w_hour: u16,
+    w_minute: u16,
+    w_second: u16,
+    w_milliseconds: u16,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetLocalTime(lp_system_time: *mut Win32SystemTime);
+}
+
+#[derive(Clone)]
+struct ParsedNoteEntry {
+    line_number: usize,
+    timestamp: Option<String>,
+    content: String,
+    search_lower: String,
+}
 
 struct CachedNoteFile {
     modified: Option<SystemTime>,
     len: u64,
-    lines: Vec<(usize, String, String)>, // (0-based line_idx, raw_line, lower_line)
+    entries: Vec<ParsedNoteEntry>,
 }
 
 static NOTE_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedNoteFile>>> = OnceLock::new();
 
-fn get_cached_lines(path: &Path) -> Vec<(usize, String, String)> {
+fn is_separator_line(trimmed: &str) -> bool {
+    trimmed.len() >= 3
+        && (trimmed.chars().all(|c| c == '-') || trimmed.chars().all(|c| c == '='))
+}
+
+fn parse_timestamp_header(trimmed: &str) -> Option<String> {
+    if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 12 {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        if inner.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            return Some(inner.to_string());
+        }
+    }
+    None
+}
+
+fn get_cached_notes(path: &Path) -> Vec<ParsedNoteEntry> {
     let Ok(meta) = fs::metadata(path) else {
         return Vec::new();
     };
@@ -35,7 +77,7 @@ fn get_cached_lines(path: &Path) -> Vec<(usize, String, String)> {
     if let Ok(mut guard) = cache_mutex.lock() {
         if let Some(entry) = guard.get(path) {
             if entry.modified == modified && entry.len == len {
-                return entry.lines.clone();
+                return entry.entries.clone();
             }
         }
 
@@ -43,20 +85,32 @@ fn get_cached_lines(path: &Path) -> Vec<(usize, String, String)> {
             return Vec::new();
         };
 
-        let lines: Vec<(usize, String, String)> = raw
-            .lines()
-            .enumerate()
-            .filter_map(|(idx, line)| {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some((idx, trimmed.to_string(), trimmed.to_ascii_lowercase()))
-                }
-            })
-            .collect();
+        let mut entries = Vec::new();
+        let mut pending_ts: Option<String> = None;
 
-        // Keep cache bounded to at most 16 note files
+        for (idx, line) in raw.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || is_separator_line(trimmed) {
+                continue;
+            }
+            if let Some(ts) = parse_timestamp_header(trimmed) {
+                pending_ts = Some(ts);
+                continue;
+            }
+
+            let search_lower = match &pending_ts {
+                Some(ts) => format!("{} {}", ts.to_ascii_lowercase(), trimmed.to_ascii_lowercase()),
+                None => trimmed.to_ascii_lowercase(),
+            };
+
+            entries.push(ParsedNoteEntry {
+                line_number: idx + 1,
+                timestamp: pending_ts.take(),
+                content: trimmed.to_string(),
+                search_lower,
+            });
+        }
+
         if guard.len() >= 16 && !guard.contains_key(path) {
             guard.clear();
         }
@@ -65,10 +119,10 @@ fn get_cached_lines(path: &Path) -> Vec<(usize, String, String)> {
             CachedNoteFile {
                 modified,
                 len,
-                lines: lines.clone(),
+                entries: entries.clone(),
             },
         );
-        return lines;
+        return entries;
     }
 
     Vec::new()
@@ -130,7 +184,7 @@ pub fn evaluate_note_bang(note: &NoteBangItem, remainder: &str) -> Vec<Candidate
         out.push(CandidateItem {
             title: format!("Open {} in Default Editor", file_label),
             subtitle: format!("{} • Launch external editor", file_path.display()),
-            badge: badge_label.clone(),
+            badge: badge_label,
             icon_override: Some("📂".to_string()),
             category: ShelfCategory::Notes,
             can_elevate: false,
@@ -160,7 +214,7 @@ pub fn evaluate_note_bang(note: &NoteBangItem, remainder: &str) -> Vec<Candidate
         out.push(CandidateItem {
             title: format!("Save to {}: \"{}\"", file_label, trimmed),
             subtitle: format!(
-                "Press Enter to append line to {} and refresh preview",
+                "Appends separator + current date & time + note to {}",
                 file_path.display()
             ),
             badge: "Save Note".to_string(),
@@ -171,28 +225,12 @@ pub fn evaluate_note_bang(note: &NoteBangItem, remainder: &str) -> Vec<Candidate
             target: ExecutionTarget::NoteAction(NoteActionKind::AppendLine {
                 file_path: file_path.clone(),
                 content: trimmed.to_string(),
-                with_timestamp: false,
             }),
         });
 
         out.push(CandidateItem {
-            title: format!("Save Timestamped: \"{}\"", trimmed),
-            subtitle: format!("Prepend [YYYY-MM-DD HH:MM:SS] in {}", file_label),
-            badge: "Timestamp".to_string(),
-            icon_override: Some("🕒".to_string()),
-            category: ShelfCategory::Notes,
-            can_elevate: false,
-            score: 9_600,
-            target: ExecutionTarget::NoteAction(NoteActionKind::AppendLine {
-                file_path: file_path.clone(),
-                content: trimmed.to_string(),
-                with_timestamp: true,
-            }),
-        });
-
-        out.push(CandidateItem {
-            title: format!("Overwrite {} with typed text", file_label),
-            subtitle: "Replace entire file content with this line".to_string(),
+            title: format!("Overwrite {} with this note", file_label),
+            subtitle: "Replaces entire file with separator + current date & time + note".to_string(),
             badge: "Overwrite".to_string(),
             icon_override: Some("📄".to_string()),
             category: ShelfCategory::Notes,
@@ -206,12 +244,11 @@ pub fn evaluate_note_bang(note: &NoteBangItem, remainder: &str) -> Vec<Candidate
     } else {
         out.push(CandidateItem {
             title: format!(
-                "{} ({}) — Type text & press Enter to save",
+                "{} ({}) — Type a note & press Enter to save",
                 note.name, file_label
             ),
             subtitle: format!(
-                "Active bang: '{}' • File: {}",
-                note.bang,
+                "Automatically adds separator & date/time • File: {}",
                 file_path.display()
             ),
             badge: badge_label.clone(),
@@ -223,30 +260,43 @@ pub fn evaluate_note_bang(note: &NoteBangItem, remainder: &str) -> Vec<Candidate
         });
     }
 
-    // 2. Read cached lines from file (newest first)
-    let cached_lines = get_cached_lines(&file_path);
+    // 2. Read cached notes from file (newest first)
+    let cached_notes = get_cached_notes(&file_path);
     let mut matched_count = 0usize;
 
-    for (line_idx, raw_line, lower_line) in cached_lines.iter().rev() {
-        if !lower.is_empty() && !lower_line.contains(&lower) {
+    for entry in cached_notes.iter().rev() {
+        if !lower.is_empty() && !entry.search_lower.contains(&lower) {
             continue;
         }
-        out.push(CandidateItem {
-            title: raw_line.clone(),
-            subtitle: format!(
-                "Line {} in {} • Press Enter to copy to clipboard",
-                line_idx + 1,
-                file_label
+        let subtitle = match &entry.timestamp {
+            Some(ts) => format!(
+                "🕒 {}  •  Line {} in {}  (Enter to copy)",
+                ts, entry.line_number, file_label
             ),
-            badge: format!("Line {}", line_idx + 1),
+            None => format!(
+                "Line {} in {}  •  Press Enter to copy to clipboard",
+                entry.line_number, file_label
+            ),
+        };
+        let badge = entry
+            .timestamp
+            .as_deref()
+            .and_then(|ts| ts.split_whitespace().next())
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| format!("Line {}", entry.line_number));
+
+        out.push(CandidateItem {
+            title: entry.content.clone(),
+            subtitle,
+            badge,
             icon_override: Some("📝".to_string()),
             category: ShelfCategory::Notes,
             can_elevate: false,
             score: 8_500 - (matched_count as i64),
-            target: ExecutionTarget::CopyToClipboard(raw_line.clone()),
+            target: ExecutionTarget::CopyToClipboard(entry.content.clone()),
         });
         matched_count += 1;
-        if matched_count >= MAX_PREVIEW_LINES {
+        if matched_count >= MAX_PREVIEW_NOTES {
             break;
         }
     }
@@ -264,24 +314,23 @@ pub fn evaluate_note_bang(note: &NoteBangItem, remainder: &str) -> Vec<Candidate
     });
 
     if trimmed.is_empty() {
-        if let Some((last_idx, last_text, _)) = cached_lines.last() {
+        if let Some(last_entry) = cached_notes.last() {
             out.push(CandidateItem {
-                title: format!("Delete Last Line: \"{}\"", last_text),
-                subtitle: format!("Remove line {} from {}", last_idx + 1, file_label),
-                badge: "Delete Line".to_string(),
+                title: format!("Delete Last Note: \"{}\"", last_entry.content),
+                subtitle: format!("Remove the most recent note block from {}", file_label),
+                badge: "Delete Note".to_string(),
                 icon_override: Some("⌫".to_string()),
                 category: ShelfCategory::Notes,
                 can_elevate: false,
                 score: 7_100,
-                target: ExecutionTarget::NoteAction(NoteActionKind::DeleteLine {
+                target: ExecutionTarget::NoteAction(NoteActionKind::DeleteLastNote {
                     file_path: file_path.clone(),
-                    line_index: *last_idx,
                 }),
             });
 
             out.push(CandidateItem {
                 title: format!("Clear Entire File ({})", file_label),
-                subtitle: "Remove all lines from this note file".to_string(),
+                subtitle: "Remove all notes from this file".to_string(),
                 badge: "Clear".to_string(),
                 icon_override: Some("🗑".to_string()),
                 category: ShelfCategory::Notes,
@@ -295,34 +344,29 @@ pub fn evaluate_note_bang(note: &NoteBangItem, remainder: &str) -> Vec<Candidate
     out
 }
 
+fn format_note_block(content: &str, prepend_newline: bool) -> String {
+    let ts = current_local_timestamp();
+    if prepend_newline {
+        format!("\n{}\n[{}]\n{}\n", NOTE_SEPARATOR, ts, content)
+    } else {
+        format!("{}\n[{}]\n{}\n", NOTE_SEPARATOR, ts, content)
+    }
+}
+
 pub fn execute_note_action(action: &NoteActionKind) -> io::Result<bool> {
     match action {
-        NoteActionKind::AppendLine {
-            file_path,
-            content,
-            with_timestamp,
-        } => {
+        NoteActionKind::AppendLine { file_path, content } => {
             if let Some(parent) = file_path.parent() {
                 if !parent.as_os_str().is_empty() && !parent.exists() {
                     let _ = fs::create_dir_all(parent);
                 }
             }
-            let is_md = file_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("md"))
+
+            let file_non_empty = fs::metadata(file_path)
+                .map(|m| m.len() > 0)
                 .unwrap_or(false);
 
-            let formatted = if *with_timestamp {
-                let ts = current_timestamp_label();
-                if is_md {
-                    format!("- **[{}]** {}\n", ts, content)
-                } else {
-                    format!("[{}] {}\n", ts, content)
-                }
-            } else {
-                format!("{}\n", content)
-            };
+            let formatted = format_note_block(content, file_non_empty);
 
             let mut file = OpenOptions::new()
                 .create(true)
@@ -338,24 +382,31 @@ pub fn execute_note_action(action: &NoteActionKind) -> io::Result<bool> {
                     let _ = fs::create_dir_all(parent);
                 }
             }
-            fs::write(file_path, format!("{}\n", content))?;
+            let formatted = format_note_block(content, false);
+            fs::write(file_path, formatted)?;
             invalidate_cached_file(file_path);
             Ok(true)
         }
-        NoteActionKind::DeleteLine {
-            file_path,
-            line_index,
-        } => {
+        NoteActionKind::DeleteLastNote { file_path } => {
             if let Ok(raw) = fs::read_to_string(file_path) {
-                let remaining: Vec<&str> = raw
-                    .lines()
-                    .enumerate()
-                    .filter_map(|(i, l)| if i == *line_index { None } else { Some(l) })
-                    .collect();
-                let new_body = if remaining.is_empty() {
+                let mut lines: Vec<&str> = raw.lines().collect();
+                while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+                    lines.pop();
+                }
+                // Pop the note content line(s) back to the last separator
+                while let Some(line) = lines.pop() {
+                    if is_separator_line(line.trim()) {
+                        break;
+                    }
+                }
+                while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+                    lines.pop();
+                }
+
+                let new_body = if lines.is_empty() {
                     String::new()
                 } else {
-                    format!("{}\n", remaining.join("\n"))
+                    format!("{}\n", lines.join("\n"))
                 };
                 fs::write(file_path, new_body)?;
                 invalidate_cached_file(file_path);
@@ -372,29 +423,13 @@ pub fn execute_note_action(action: &NoteActionKind) -> io::Result<bool> {
     }
 }
 
-fn current_timestamp_label() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    let days = (secs / 86_400) as i64;
-    let rem = secs % 86_400;
-    let hour = rem / 3_600;
-    let min = (rem % 3_600) / 60;
-    let sec = rem % 60;
-
-    // Howard Hinnant civil-from-days algorithm
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, m, d, hour, min, sec)
+fn current_local_timestamp() -> String {
+    unsafe {
+        let mut st: Win32SystemTime = zeroed();
+        GetLocalTime(&mut st);
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            st.w_year, st.w_month, st.w_day, st.w_hour, st.w_minute, st.w_second
+        )
+    }
 }

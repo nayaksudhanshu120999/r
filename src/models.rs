@@ -103,15 +103,13 @@ pub enum NoteActionKind {
     AppendLine {
         file_path: PathBuf,
         content: String,
-        with_timestamp: bool,
     },
     OverwriteFile {
         file_path: PathBuf,
         content: String,
     },
-    DeleteLine {
+    DeleteLastNote {
         file_path: PathBuf,
-        line_index: usize,
     },
     ClearFile {
         file_path: PathBuf,

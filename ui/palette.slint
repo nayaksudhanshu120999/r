@@ -237,10 +237,6 @@ export component PaletteWindow inherits Window {
     always-on-top: true;
     width: 680px;
     height: 440px;
-    min-width: 680px;
-    max-width: 680px;
-    min-height: 440px;
-    max-height: 440px;
     background: transparent;
 
     in property <image> window_icon;
@@ -458,9 +454,9 @@ export component PaletteWindow inherits Window {
                 if root.entries.length > 0 : ScrollView {
                     width: 100%;
                     height: 100%;
-                    viewport-height: root.entries.length * 52px;
 
                     VerticalLayout {
+                        alignment: start;
                         spacing: 3px;
                         padding-right: 4px;
 
@@ -636,8 +632,8 @@ export component PaletteWindow inherits Window {
 // ============================================================================
 export component SettingsWindow inherits Window {
     title: "Command Palette Settings";
-    width: 780px;
-    height: 560px;
+    preferred-width: 780px;
+    preferred-height: 560px;
     min-width: 720px;
     min-height: 500px;
     background: root.theme_window_bg;
@@ -883,6 +879,7 @@ export component SettingsWindow inherits Window {
                     height: 100%;
 
                     VerticalLayout {
+                        alignment: start;
                         spacing: 12px;
                         padding-right: 6px;
 
@@ -1053,7 +1050,7 @@ export component SettingsWindow inherits Window {
                             color: root.theme_text_primary;
                         }
                         Text {
-                            text: "Bind different bangs (e.g. 'note', 'todo', 'work') to separate .txt or .md files. Type '<bang> ' in the palette to append lines or search existing lines.";
+                            text: "Bind different bangs (e.g. 'note', 'todo', 'work') to separate .txt or .md files. Every saved note automatically inserts a separator and the current date & time.";
                             font-size: 11.5px;
                             color: root.theme_text_muted;
                             wrap: word-wrap;
@@ -1115,9 +1112,9 @@ export component SettingsWindow inherits Window {
                         ScrollView {
                             width: 100%;
                             height: 100%;
-                            viewport-height: root.note_entries.length * 48px;
 
                             VerticalLayout {
+                                alignment: start;
                                 padding: 10px;
                                 spacing: 6px;
 
@@ -1289,9 +1286,9 @@ export component SettingsWindow inherits Window {
                         ScrollView {
                             width: 100%;
                             height: 100%;
-                            viewport-height: root.bang_entries.length * 40px;
 
                             VerticalLayout {
+                                alignment: start;
                                 padding: 10px;
                                 spacing: 5px;
                                 for b in root.bang_entries : Rectangle {
@@ -1392,8 +1389,8 @@ export component SettingsWindow inherits Window {
                             card-bg: root.theme_card_bg; border-col: root.theme_border;
                             ScrollView {
                                 width: 100%; height: 100%;
-                                viewport-height: (root.custom_cmd_entries.length + root.builtin_cmd_entries.length) * 38px;
                                 VerticalLayout {
+                                    alignment: start;
                                     padding: 8px; spacing: 4px;
                                     for c[idx] in root.custom_cmd_entries : Rectangle {
                                         height: 32px; border-radius: 5px; background: root.theme_surface_bg;
@@ -1425,8 +1422,8 @@ export component SettingsWindow inherits Window {
                             card-bg: root.theme_card_bg; border-col: root.theme_border;
                             ScrollView {
                                 width: 100%; height: 100%;
-                                viewport-height: (root.custom_setting_entries.length + root.builtin_setting_entries.length) * 38px;
                                 VerticalLayout {
+                                    alignment: start;
                                     padding: 8px; spacing: 4px;
                                     for s[idx] in root.custom_setting_entries : Rectangle {
                                         height: 32px; border-radius: 5px; background: root.theme_surface_bg;
@@ -1515,8 +1512,8 @@ export component SettingsWindow inherits Window {
                         card-bg: root.theme_card_bg; border-col: root.theme_border;
                         ScrollView {
                             width: 100%; height: 100%;
-                            viewport-height: root.app_entries.length * 38px;
                             VerticalLayout {
+                                alignment: start;
                                 padding: 8px; spacing: 4px;
                                 for app in root.app_entries : Rectangle {
                                     height: 34px; border-radius: 5px; background: root.theme_surface_bg;
@@ -1541,6 +1538,7 @@ export component SettingsWindow inherits Window {
                 if root.active_tab == 5 : ScrollView {
                     width: 100%; height: 100%;
                     VerticalLayout {
+                        alignment: start;
                         spacing: 12px;
                         padding-right: 6px;
 
