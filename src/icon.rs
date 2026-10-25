@@ -82,8 +82,10 @@ fn render_pixel(x: u32, y: u32, size: u32) -> (u8, u8, u8, u8) {
     let nx = fx / s;
     let ny = fy / s;
 
-    let chevron_top = ny >= 0.30 && ny <= 0.52 && (nx - (0.26 + (ny - 0.30) * 0.95)).abs() < 0.065;
-    let chevron_bot = ny > 0.52 && ny <= 0.74 && (nx - (0.47 - (ny - 0.52) * 0.95)).abs() < 0.065;
+    let chevron_top =
+        ny >= 0.30 && ny <= 0.52 && (nx - (0.26 + (ny - 0.30) * 0.95)).abs() < 0.065;
+    let chevron_bot =
+        ny > 0.52 && ny <= 0.74 && (nx - (0.47 - (ny - 0.52) * 0.95)).abs() < 0.065;
     let underscore = ny >= 0.66 && ny <= 0.75 && nx >= 0.52 && nx <= 0.76;
 
     if chevron_top || chevron_bot || underscore {

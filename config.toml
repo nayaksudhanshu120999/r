@@ -2,13 +2,21 @@ show_apps = true
 run_on_startup = false
 hotkey = "Ctrl+Space"
 theme = "powertoys"
+enable_cmdpal_shortcuts = true
+enable_builtin_cmds = true
+enable_builtin_settings = true
+disabled_builtin_cmds = []
+disabled_builtin_settings = []
+default_search_engine = "google"
+custom_search_url = "https://www.google.com/search?q={q}"
 custom_cmd_path = "cmd.exe"
 custom_system_settings_path = "ms-settings:"
-category_order = ["Cmds", "Settings", "Apps", "Files", "Web"]
+category_order = ["Extensions", "CmdPal", "Cmds", "Settings", "Apps", "Files", "Web"]
 hidden_apps = []
 custom_file_scan_paths = []
 custom_commands = []
 custom_settings = []
+removed_builtin_extensions = []
 
 [custom_theme]
 window_bg = "#1f1f1f"
@@ -31,3 +39,14 @@ wiki = "https://en.wikipedia.org/w/index.php?search={q}"
 so = "https://stackoverflow.com/search?q={q}"
 r = "https://www.reddit.com/search/?q={q}"
 maps = "https://www.google.com/maps/search/{q}"
+
+[[extensions]]
+id = "notepad"
+name = "Quick Notepad & File Viewer"
+description = "Use bang 'note' to save text to a .txt or .md file and view file contents in the palette"
+bang = "note"
+icon = "📝"
+enabled = true
+kind = "NotepadFile"
+target_file = "notes.md"
+command_template = ""

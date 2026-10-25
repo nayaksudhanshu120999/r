@@ -1,17 +1,22 @@
 cmdpal-rs/
 ├── .github/
 │   └── workflows/
-│       └── build.yml
+│       └── build.yml          # GitHub Actions CI/CD workflow for Windows x64 release
 ├── .gitignore
-├── Cargo.toml
-├── build.rs
-├── config.toml
+├── Cargo.toml                 # Rust package & dependency configuration
+├── build.rs                   # Slint UI compiler & procedural Windows .ico generator
+├── config.toml                # Default runtime configuration, bangs & extensions
+├── EXTENSIONS_GUIDE.md        # Step-by-step Extensions & Notepad guide (also embedded in exe)
+├── README.md                  # Project documentation
 ├── ui/
-│   └── palette.slint
+│   └── palette.slint          # Slint UI for PaletteWindow & 7-tab SettingsWindow
 └── src/
-    ├── main.rs
-    ├── models.rs
-    ├── config.rs
-    ├── indexer.rs
-    ├── engine.rs
-    └── executor.rs
+    ├── main.rs                # Application entry point, UI state sync & event loop
+    ├── models.rs              # Core data structures, ShelfCategory & ExecutionOutcome
+    ├── config.rs              # TOML config loader, normalizer & persistence helpers
+    ├── extensions.rs          # Pluggable Extension Engine, Notepad ('note') & Guide manager
+    ├── indexer.rs             # Start Menu (.lnk) & custom directory file scanner
+    ├── engine.rs              # 7-tier smart ranking engine, calculator & bang parser
+    ├── executor.rs            # Process/URI/Admin launcher & clipboard integration
+    ├── icon.rs                # Procedural RGBA app & system tray icon renderer
+    └── system.rs              # Win32 single-instance mutex, tray icon & global hotkey host

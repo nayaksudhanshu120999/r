@@ -3,405 +3,1324 @@
 mod config;
 mod engine;
 mod executor;
+mod extensions;
 mod icon;
 mod indexer;
 mod models;
 mod system;
 
 use config::{AppConfig, CustomCommandItem, CustomSettingItem, CustomThemeConfig};
-use engine::QueryEngine;
+use engine::{QueryEngine, BUILTIN_COMMANDS, BUILTIN_SETTINGS};
 use executor::execute_candidate;
-use icon::create_slint_app_icon;
+use extensions::{
+    ensure_extensions_guide_file, open_extension_target_file, open_extensions_guide,
+    ExtensionEntry, ExtensionKind, BUILTIN_NOTEPAD_ID,
+};
 use indexer::{build_custom_files_index, build_start_menu_index};
-use models::{CandidateItem, ExecutionTarget};
-use slint::{
-    Color, ComponentHandle, LogicalPosition, LogicalSize, ModelRc, SharedString, Timer, TimerMode,
-    VecModel,
-};
-use std::cell::RefCell;
+use models::{CandidateItem, ExecutionOutcome, ShelfCategory};
+use slint::{Color, ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
-use system::{
-    activate_window_by_title, check_outside_click_or_focus_loss, enable_window_maximize,
-    ensure_single_instance_or_activate_existing, init_system_integration, primary_screen_size,
-    shutdown_system_integration, SystemEvent,
-};
+use std::time::Duration;
+use system::SystemEvent;
 
 slint::include_modules!();
 
-const PALETTE_TITLE: &str = "Command Palette";
-const SETTINGS_TITLE: &str = "Command Palette Settings";
-const CONFIG_FILE_PATH: &str = "config.toml";
-const WINDOW_WIDTH: f32 = 680.0;
-const COMPACT_HEIGHT: f32 = 68.0;
-const MAX_EXPANDED_HEIGHT: f32 = 460.0;
+const CONFIG_PATH: &str = "config.toml";
+const PALETTE_WIN_TITLE: &str = "Command Palette";
+const SETTINGS_WIN_TITLE: &str = "Command Palette Settings";
 
-struct PaletteState {
+struct RuntimeState {
     engine: QueryEngine,
-    current_candidates: Vec<CandidateItem>,
-    palette_visible: bool,
-    last_shown_at: Instant,
+    candidates: Vec<CandidateItem>,
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    // 1. Single-Instance Lock: prevents multiple tray icons and activates existing instance
-    if !ensure_single_instance_or_activate_existing() {
+    if !system::ensure_single_instance_or_activate_existing() {
         return Ok(());
     }
 
-    let config = AppConfig::load_or_create(CONFIG_FILE_PATH);
-    let indexed_apps = build_start_menu_index();
-    let indexed_files = build_custom_files_index(&config.custom_file_scan_paths);
-    let engine = QueryEngine::new(config, indexed_apps, indexed_files);
+    // Always ensure EXTENSIONS_GUIDE.md exists next to the executable/config so it never gets lost
+    let _ = ensure_extensions_guide_file();
 
-    let app_icon = create_slint_app_icon();
-    let initial_theme = build_ui_theme_colors(&engine.config);
+    let config = AppConfig::load_or_create(CONFIG_PATH);
+    let sys_rx = system::init_system_integration(config.run_on_startup, &config.hotkey);
 
-    let palette_ui = PaletteWindow::new()?;
-    palette_ui.set_app_icon(app_icon.clone());
-    palette_ui.set_theme(initial_theme.clone());
-    palette_ui.set_dynamic_height(COMPACT_HEIGHT);
-    palette_ui
-        .window()
-        .set_size(LogicalSize::new(WINDOW_WIDTH, COMPACT_HEIGHT));
+    let apps = build_start_menu_index();
+    let custom_files = build_custom_files_index(&config.custom_file_scan_paths);
 
-    let settings_ui = SettingsWindow::new()?;
-    settings_ui.set_app_icon(app_icon);
-    settings_ui.set_theme(initial_theme);
-
-    let state = Rc::new(RefCell::new(PaletteState {
-        engine,
-        current_candidates: Vec::new(),
-        palette_visible: true,
-        last_shown_at: Instant::now(),
+    let state = Rc::new(RefCell::new(RuntimeState {
+        engine: QueryEngine::new(config, apps, custom_files),
+        candidates: Vec::new(),
     }));
 
-    sync_settings_ui(&settings_ui, &state.borrow().engine);
+    let palette = PaletteWindow::new()?;
+    let settings = SettingsWindow::new()?;
 
-    // Query input edited callback (Handles Bang Pill Chip creation when user types e.g. "yt ")
+    let app_icon = icon::create_slint_app_icon();
+    palette.set_app_icon(app_icon.clone());
+    settings.set_app_icon(app_icon);
+
+    let palette_visible = Rc::new(Cell::new(false));
+    let focus_grace_ticks = Rc::new(Cell::new(0u8));
+
+    center_palette_on_screen(&palette);
+    sync_settings_ui(&settings, &palette, &state.borrow().engine);
+
+    // 1. Live Search Input + Automatic Bang Pill Chip Extraction (including `note `)
     {
-        let ui_weak = palette_ui.as_weak();
         let state_ref = Rc::clone(&state);
-        palette_ui.on_query_changed(move |query| {
-            let Some(window) = ui_weak.upgrade() else {
+        let palette_weak = palette.as_weak();
+        palette.on_query_edited(move |text| {
+            let Some(ui) = palette_weak.upgrade() else {
                 return;
             };
-
-            let current_bang = window.get_active_bang().to_string();
-            let raw_q = query.to_string();
+            let current_bang = ui.get_active_bang().to_string();
 
             if current_bang.is_empty() {
                 let maybe_bang = {
                     let st = state_ref.borrow();
-                    st.engine.extract_bang_prefix(&raw_q)
+                    st.engine.extract_bang_prefix(text.as_str())
                 };
-
-                if let Some((bang_key, remainder)) = maybe_bang {
-                    window.set_active_bang(SharedString::from(bang_key.as_str()));
-                    window.set_active_bang_label(SharedString::from(
-                        bang_key.to_ascii_uppercase().as_str(),
-                    ));
-                    window.set_query_text(SharedString::from(remainder.as_str()));
-                    refresh_results(&window, &state_ref, &bang_key, &remainder);
+                if let Some((bang_key, bang_label, remainder)) = maybe_bang {
+                    ui.set_active_bang(SharedString::from(bang_key.as_str()));
+                    ui.set_active_bang_label(SharedString::from(bang_label.as_str()));
+                    ui.set_query_text(SharedString::from(remainder.as_str()));
+                    refresh_palette_results(&ui, &state_ref, &bang_key, &remainder);
                     return;
                 }
             }
 
-            refresh_results(&window, &state_ref, &current_bang, &raw_q);
+            refresh_palette_results(&ui, &state_ref, &current_bang, text.as_str());
         });
     }
 
-    // Clear active Bang Pill Chip (Backspace on empty query or clicking ✕ on chip)
+    // 2. Clear Bang Chip
     {
-        let ui_weak = palette_ui.as_weak();
         let state_ref = Rc::clone(&state);
-        palette_ui.on_clear_active_bang(move || {
-            if let Some(window) = ui_weak.upgrade() {
-                window.set_active_bang(SharedString::from(""));
-                window.set_active_bang_label(SharedString::from(""));
-                let q = window.get_query_text().to_string();
-                refresh_results(&window, &state_ref, "", &q);
+        let palette_weak = palette.as_weak();
+        palette.on_clear_active_bang(move || {
+            if let Some(ui) = palette_weak.upgrade() {
+                ui.set_active_bang(SharedString::default());
+                ui.set_active_bang_label(SharedString::default());
+                let current_q = ui.get_query_text().to_string();
+                refresh_palette_results(&ui, &state_ref, "", &current_q);
             }
         });
     }
 
-    // Activate item (Enter or Left-Click)
+    // 3. Up/Down Keyboard Selection
     {
-        let ui_weak = palette_ui.as_weak();
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(&state);
-        palette_ui.on_activate_item(move |index| {
-            let (candidate, cmd_path) = {
-                let st = state_ref.borrow();
-                (
-                    st.current_candidates.get(index as usize).cloned(),
-                    st.engine.config.custom_cmd_path.clone(),
-                )
-            };
+        let palette_weak = palette.as_weak();
+        palette.on_move_selection(move |delta| {
+            if let Some(ui) = palette_weak.upgrade() {
+                let total = ui.get_total_candidates();
+                if total <= 0 {
+                    ui.set_selected_candidate_index(0);
+                    return;
+                }
+                let current = ui.get_selected_candidate_index();
+                let next = (current + delta).rem_euclid(total);
+                ui.set_selected_candidate_index(next);
+            }
+        });
+    }
 
-            if let Some(item) = candidate {
-                if matches!(item.target, ExecutionTarget::OpenPaletteSettings) {
-                    if let Some(window) = ui_weak.upgrade() {
-                        hide_palette(&window, &state_ref);
+    // 4. Execute Selected Candidate
+    {
+        let state_ref = Rc::clone(&state);
+        let palette_weak = palette.as_weak();
+        let settings_weak = settings.as_weak();
+        let vis_ref = Rc::clone(&palette_visible);
+        palette.on_trigger_selected(move |run_as_admin| {
+            if let Some(ui) = palette_weak.upgrade() {
+                let idx = ui.get_selected_candidate_index();
+                execute_and_handle_outcome(
+                    &ui,
+                    &settings_weak,
+                    &state_ref,
+                    &vis_ref,
+                    idx,
+                    run_as_admin,
+                );
+            }
+        });
+    }
+
+    // 5. Execute Candidate by Mouse Click
+    {
+        let state_ref = Rc::clone(&state);
+        let palette_weak = palette.as_weak();
+        let settings_weak = settings.as_weak();
+        let vis_ref = Rc::clone(&palette_visible);
+        palette.on_trigger_candidate_at(move |idx, run_as_admin| {
+            if let Some(ui) = palette_weak.upgrade() {
+                execute_and_handle_outcome(
+                    &ui,
+                    &settings_weak,
+                    &state_ref,
+                    &vis_ref,
+                    idx,
+                    run_as_admin,
+                );
+            }
+        });
+    }
+
+    // 6. Open Settings Window
+    {
+        let state_ref = Rc::clone(&state);
+        let palette_weak = palette.as_weak();
+        let settings_weak = settings.as_weak();
+        let vis_ref = Rc::clone(&palette_visible);
+        palette.on_open_settings_window(move || {
+            if let Some(p_ui) = palette_weak.upgrade() {
+                reset_and_hide_palette(&p_ui, &vis_ref);
+                if let Some(s_ui) = settings_weak.upgrade() {
+                    sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                    let _ = s_ui.show();
+                    system::enable_window_maximize(SETTINGS_WIN_TITLE);
+                    system::activate_window_by_title(SETTINGS_WIN_TITLE);
+                }
+            }
+        });
+    }
+
+    // 7. Escape Hides Palette
+    {
+        let palette_weak = palette.as_weak();
+        let vis_ref = Rc::clone(&palette_visible);
+        palette.on_hide_requested(move || {
+            if let Some(ui) = palette_weak.upgrade() {
+                reset_and_hide_palette(&ui, &vis_ref);
+            }
+        });
+    }
+
+    // 8. Close Event on Settings Window hides instead of quitting tray app
+    {
+        let settings_weak = settings.as_weak();
+        settings.window().on_close_requested(move || {
+            if let Some(s_ui) = settings_weak.upgrade() {
+                let _ = s_ui.hide();
+            }
+            slint::CloseRequestResponse::KeepWindowShown
+        });
+    }
+
+    wire_settings_callbacks(&settings, &palette, &state);
+
+    // 9. Poll Tray, Global Hotkey, Outside Click, and Config Reload Events
+    let poll_timer = Timer::default();
+    {
+        let palette_weak = palette.as_weak();
+        let settings_weak = settings.as_weak();
+        let state_ref = Rc::clone(&state);
+        let vis_ref = Rc::clone(&palette_visible);
+        let grace_ref = Rc::clone(&focus_grace_ticks);
+
+        poll_timer.start(TimerMode::Repeated, Duration::from_millis(30), move || {
+            while let Ok(ev) = sys_rx.try_recv() {
+                match ev {
+                    SystemEvent::ShowPalette => {
+                        if let Some(p_ui) = palette_weak.upgrade() {
+                            summon_palette(&p_ui, &state_ref, &vis_ref, &grace_ref);
+                        }
                     }
-                    if let Some(settings_win) = settings_weak.upgrade() {
-                        open_settings_window(&settings_win, &state_ref.borrow().engine);
+                    SystemEvent::TogglePalette => {
+                        if let Some(p_ui) = palette_weak.upgrade() {
+                            if vis_ref.get() {
+                                reset_and_hide_palette(&p_ui, &vis_ref);
+                            } else {
+                                summon_palette(&p_ui, &state_ref, &vis_ref, &grace_ref);
+                            }
+                        }
                     }
-                } else if execute_candidate(&item, false, &cmd_path).is_ok() {
-                    if let Some(window) = ui_weak.upgrade() {
-                        hide_palette(&window, &state_ref);
+                    SystemEvent::OpenSettings => {
+                        if let (Some(s_ui), Some(p_ui)) =
+                            (settings_weak.upgrade(), palette_weak.upgrade())
+                        {
+                            reset_and_hide_palette(&p_ui, &vis_ref);
+                            sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                            let _ = s_ui.show();
+                            system::enable_window_maximize(SETTINGS_WIN_TITLE);
+                            system::activate_window_by_title(SETTINGS_WIN_TITLE);
+                        }
+                    }
+                    SystemEvent::ReloadConfig => {
+                        if let (Some(s_ui), Some(p_ui)) =
+                            (settings_weak.upgrade(), palette_weak.upgrade())
+                        {
+                            reload_engine_and_ui(&state_ref, &p_ui, &s_ui, "Reloaded configuration");
+                        }
+                    }
+                    SystemEvent::QuitApp => {
+                        system::shutdown_system_integration();
+                        let _ = slint::quit_event_loop();
+                        return;
+                    }
+                }
+            }
+
+            if vis_ref.get() {
+                let g = grace_ref.get();
+                if g > 0 {
+                    grace_ref.set(g - 1);
+                } else if system::check_outside_click_or_focus_loss(PALETTE_WIN_TITLE) {
+                    if let Some(p_ui) = palette_weak.upgrade() {
+                        reset_and_hide_palette(&p_ui, &vis_ref);
                     }
                 }
             }
         });
     }
 
-    // Run as Administrator (Right-click menu or Ctrl+Enter)
-    {
-        let ui_weak = palette_ui.as_weak();
-        let state_ref = Rc::clone(&state);
-        palette_ui.on_run_item_admin(move |index| {
-            let (candidate, cmd_path) = {
-                let st = state_ref.borrow();
-                (
-                    st.current_candidates.get(index as usize).cloned(),
-                    st.engine.config.custom_cmd_path.clone(),
-                )
-            };
+    summon_palette(&palette, &state, &palette_visible, &focus_grace_ticks);
+    slint::run_event_loop_until_quit()?;
+    system::shutdown_system_integration();
+    Ok(())
+}
 
-            if let Some(item) = candidate {
-                if execute_candidate(&item, true, &cmd_path).is_ok() {
-                    if let Some(window) = ui_weak.upgrade() {
-                        hide_palette(&window, &state_ref);
-                    }
-                }
-            }
-        });
-    }
-
-    // Open Settings GUI from Palette gear button or Ctrl+,
+fn wire_settings_callbacks(
+    settings: &SettingsWindow,
+    palette: &PaletteWindow,
+    state: &Rc<RefCell<RuntimeState>>,
+) {
+    // Open Bundled EXTENSIONS_GUIDE.md with 1 click
     {
-        let ui_weak = palette_ui.as_weak();
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(&state);
-        palette_ui.on_open_settings(move || {
-            if let Some(window) = ui_weak.upgrade() {
-                hide_palette(&window, &state_ref);
-            }
-            if let Some(settings_win) = settings_weak.upgrade() {
-                open_settings_window(&settings_win, &state_ref.borrow().engine);
-            }
-        });
-    }
-
-    // Escape key handling
-    {
-        let ui_weak = palette_ui.as_weak();
-        let state_ref = Rc::clone(&state);
-        palette_ui.on_escape_pressed(move || {
-            if let Some(window) = ui_weak.upgrade() {
-                if !window.get_query_text().is_empty() || !window.get_active_bang().is_empty() {
-                    window.set_active_bang(SharedString::from(""));
-                    window.set_active_bang_label(SharedString::from(""));
-                    window.set_query_text(SharedString::from(""));
-                    refresh_results(&window, &state_ref, "", "");
+        let s_weak = settings.as_weak();
+        settings.on_open_extensions_guide(move || {
+            let result = open_extensions_guide();
+            if let Some(s_ui) = s_weak.upgrade() {
+                if result.is_ok() {
+                    s_ui.set_status_message(SharedString::from(
+                        "Opened EXTENSIONS_GUIDE.md in default viewer",
+                    ));
                 } else {
-                    hide_palette(&window, &state_ref);
+                    s_ui.set_status_message(SharedString::from(
+                        "Failed to open EXTENSIONS_GUIDE.md",
+                    ));
                 }
             }
         });
     }
 
-    wire_settings_callbacks(&settings_ui, &palette_ui, &state);
-
-    let sys_rx = init_system_integration();
-
-    let monitor_timer = Timer::default();
+    // Save & Open Selected Notepad (.txt / .md) File with 1 click
     {
-        let ui_weak = palette_ui.as_weak();
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(&state);
-
-        monitor_timer.start(
-            TimerMode::Repeated,
-            Duration::from_millis(35),
-            move || {
-                while let Ok(ev) = sys_rx.try_recv() {
-                    match ev {
-                        SystemEvent::ShowPalette => {
-                            if let Some(window) = ui_weak.upgrade() {
-                                show_and_focus_palette(&window, &state_ref);
-                            }
-                        }
-                        SystemEvent::TogglePalette => {
-                            if let Some(window) = ui_weak.upgrade() {
-                                let is_vis = state_ref.borrow().palette_visible;
-                                if is_vis {
-                                    hide_palette(&window, &state_ref);
-                                } else {
-                                    show_and_focus_palette(&window, &state_ref);
-                                }
-                            }
-                        }
-                        SystemEvent::OpenSettings => {
-                            if let Some(window) = ui_weak.upgrade() {
-                                hide_palette(&window, &state_ref);
-                            }
-                            if let Some(settings_win) = settings_weak.upgrade() {
-                                open_settings_window(&settings_win, &state_ref.borrow().engine);
-                            }
-                        }
-                        SystemEvent::ReloadConfig => {
-                            let new_cfg = AppConfig::load_or_create(CONFIG_FILE_PATH);
-                            let new_apps = build_start_menu_index();
-                            let new_files = build_custom_files_index(&new_cfg.custom_file_scan_paths);
-                            let ui_theme = build_ui_theme_colors(&new_cfg);
-                            {
-                                let mut st = state_ref.borrow_mut();
-                                st.engine = QueryEngine::new(new_cfg, new_apps, new_files);
-                            }
-                            if let Some(pal) = ui_weak.upgrade() {
-                                pal.set_theme(ui_theme.clone());
-                            }
-                            if let Some(settings_win) = settings_weak.upgrade() {
-                                settings_win.set_theme(ui_theme);
-                                sync_settings_ui(&settings_win, &state_ref.borrow().engine);
-                                settings_win.set_status_message(SharedString::from(
-                                    "All indexes & config reloaded!",
-                                ));
-                            }
-                        }
-                        SystemEvent::QuitApp => {
-                            shutdown_system_integration();
-                            let _ = slint::quit_event_loop();
-                        }
-                    }
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_open_notepad_file(move |file_path| {
+            {
+                let mut st = state_ref.borrow_mut();
+                st.engine.config.set_notepad_file_path(file_path.as_str());
+                st.engine.config.save(CONFIG_PATH);
+            }
+            let open_res = open_extension_target_file(file_path.as_str());
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                if let Ok(resolved) = open_res {
+                    s_ui.set_status_message(SharedString::from(format!(
+                        "Opened {}",
+                        resolved.display()
+                    )));
+                } else {
+                    s_ui.set_status_message(SharedString::from("Could not open note file"));
                 }
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
 
-                let (is_vis, elapsed_ms) = {
-                    let st = state_ref.borrow();
-                    (st.palette_visible, st.last_shown_at.elapsed().as_millis())
+    // Open Any File-Backed Extension's .txt/.md File with 1 click
+    {
+        let s_weak = settings.as_weak();
+        settings.on_open_extension_file(move |target_file| {
+            let open_res = open_extension_target_file(target_file.as_str());
+            if let Some(s_ui) = s_weak.upgrade() {
+                if let Ok(resolved) = open_res {
+                    s_ui.set_status_message(SharedString::from(format!(
+                        "Opened {}",
+                        resolved.display()
+                    )));
+                } else {
+                    s_ui.set_status_message(SharedString::from("Could not open extension file"));
+                }
+            }
+        });
+    }
+
+    // Toggle Show Apps
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_toggle_show_apps(move |enabled| {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.show_apps = enabled;
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                s_ui.set_status_message(SharedString::from("Saved app visibility setting"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Toggle Startup
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        settings.on_toggle_startup(move |enabled| {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.run_on_startup = enabled;
+            st.engine.config.save(CONFIG_PATH);
+            if let Some(s_ui) = s_weak.upgrade() {
+                s_ui.set_status_message(SharedString::from("Updated Windows Startup registry"));
+            }
+        });
+    }
+
+    // Select Global Hotkey
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        settings.on_select_hotkey(move |hk| {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.hotkey = hk.to_string();
+            st.engine.config.save(CONFIG_PATH);
+            let active_hk = st.engine.config.hotkey.clone();
+            drop(st);
+            if let Some(s_ui) = s_weak.upgrade() {
+                s_ui.set_hotkey(SharedString::from(active_hk.as_str()));
+                s_ui.set_status_message(SharedString::from("Updated global hotkey"));
+            }
+        });
+    }
+
+    // Toggle CmdPal Own Shortcuts
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_toggle_cmdpal_shortcuts(move |enabled| {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.enable_cmdpal_shortcuts = enabled;
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Updated CmdPal shortcuts visibility"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Toggle All Inbuilt System Commands
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_toggle_all_builtin_cmds(move |enabled| {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.enable_builtin_cmds = enabled;
+            if enabled {
+                st.engine.config.disabled_builtin_cmds.clear();
+            }
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Updated inbuilt system commands"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Toggle Individual Inbuilt System Command
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_toggle_builtin_cmd_item(move |id, enabled| {
+            let mut st = state_ref.borrow_mut();
+            if enabled {
+                st.engine.config.enable_builtin_cmds = true;
+            }
+            st.engine.config.set_builtin_cmd_enabled(id.as_str(), enabled);
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Updated command shortcut"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Toggle All Inbuilt Windows System Settings
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_toggle_all_builtin_settings(move |enabled| {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.enable_builtin_settings = enabled;
+            if enabled {
+                st.engine.config.disabled_builtin_settings.clear();
+            }
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Updated inbuilt Windows settings"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Toggle Individual Inbuilt Windows System Setting
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_toggle_builtin_setting_item(move |id, enabled| {
+            let mut st = state_ref.borrow_mut();
+            if enabled {
+                st.engine.config.enable_builtin_settings = true;
+            }
+            st.engine
+                .config
+                .set_builtin_setting_enabled(id.as_str(), enabled);
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Updated Windows setting shortcut"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Select Default Search Engine
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_select_default_search_engine(move |engine_id| {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.default_search_engine = engine_id.to_string();
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Updated default search engine"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Save Custom Search Engine URL
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_save_custom_search_url(move |custom_url| {
+            let trimmed = custom_url.trim();
+            if trimmed.is_empty() {
+                return;
+            }
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.custom_search_url = trimmed.to_string();
+            st.engine.config.default_search_engine = "custom".to_string();
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Saved custom search engine URL"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Save Notepad Target .txt or .md File Path
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_save_notepad_file_path(move |file_path| {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.set_notepad_file_path(file_path.as_str());
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from(
+                    "Saved Notepad (.txt/.md) target file!",
+                ));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Toggle Extension Enabled/Disabled
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_toggle_extension_item(move |ext_id, enabled| {
+            let mut st = state_ref.borrow_mut();
+            if let Some(ext) = st
+                .engine
+                .config
+                .extensions
+                .iter_mut()
+                .find(|e| e.id.eq_ignore_ascii_case(ext_id.as_str()))
+            {
+                ext.enabled = enabled;
+            }
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Updated extension status"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Remove Extension
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_remove_extension_item(move |ext_id| {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.remove_extension_by_id(ext_id.as_str());
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Removed extension"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Restore Built-in Notepad Extension
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_restore_builtin_notepad(move || {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.restore_builtin_notepad();
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from(
+                    "Restored Quick Notepad ('note') extension!",
+                ));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Add Custom Extension
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_add_custom_extension(move |name, bang, kind_str, target| {
+            let clean_name = name.trim();
+            let clean_bang = bang
+                .trim()
+                .trim_start_matches('!')
+                .to_ascii_lowercase();
+            let clean_target = target.trim();
+            if clean_name.is_empty() || clean_bang.is_empty() || clean_target.is_empty() {
+                return;
+            }
+
+            let kind = ExtensionKind::from_label(kind_str.as_str());
+            let icon = match kind {
+                ExtensionKind::NotepadFile => "📝",
+                ExtensionKind::QuickAppendFile => "📌",
+                ExtensionKind::ShellCommand => "⚡",
+                ExtensionKind::WebTemplate => "🌐",
+            };
+
+            let (target_file, command_template) = match kind {
+                ExtensionKind::NotepadFile | ExtensionKind::QuickAppendFile => {
+                    (clean_target.to_string(), String::new())
+                }
+                ExtensionKind::ShellCommand | ExtensionKind::WebTemplate => {
+                    (String::new(), clean_target.to_string())
+                }
+            };
+
+            let ext_id = format!("ext_{}", clean_bang);
+            let new_ext = ExtensionEntry {
+                id: ext_id.clone(),
+                name: clean_name.to_string(),
+                description: format!("Custom {} extension", kind.as_str()),
+                bang: clean_bang,
+                icon: icon.to_string(),
+                enabled: true,
+                kind,
+                target_file,
+                command_template,
+            };
+
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.extensions.retain(|e| {
+                !e.id.eq_ignore_ascii_case(&ext_id)
+                    && !e.bang.eq_ignore_ascii_case(&new_ext.bang)
+            });
+            st.engine.config.extensions.push(new_ext);
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Added new extension!"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Select Theme Mode
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_select_theme_mode(move |mode| {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.theme = mode.to_string();
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Updated theme mode"));
+            }
+        });
+    }
+
+    // Apply Custom Theme
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_apply_custom_theme(
+            move |win_bg, surf_bg, card_bg, sel_bg, border, accent, txt_pri, txt_mut| {
+                let mut st = state_ref.borrow_mut();
+                st.engine.config.theme = "custom".to_string();
+                st.engine.config.custom_theme = CustomThemeConfig {
+                    window_bg: win_bg.trim().to_string(),
+                    surface_bg: surf_bg.trim().to_string(),
+                    card_bg: card_bg.trim().to_string(),
+                    selected_bg: sel_bg.trim().to_string(),
+                    border: border.trim().to_string(),
+                    accent: accent.trim().to_string(),
+                    text_primary: txt_pri.trim().to_string(),
+                    text_muted: txt_mut.trim().to_string(),
                 };
-
-                if is_vis && elapsed_ms > 180 {
-                    let check_focus = elapsed_ms > 350;
-                    if check_outside_click_or_focus_loss(PALETTE_TITLE, check_focus) {
-                        if let Some(window) = ui_weak.upgrade() {
-                            hide_palette(&window, &state_ref);
-                        }
-                    }
+                st.engine.config.save(CONFIG_PATH);
+                drop(st);
+                if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                    sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                    s_ui.set_status_message(SharedString::from("Applied custom theme colors"));
                 }
             },
         );
     }
 
-    show_and_focus_palette(&palette_ui, &state);
-    let res = slint::run_event_loop_until_quit();
-    shutdown_system_integration();
-    res
-}
-
-fn open_settings_window(settings_win: &SettingsWindow, engine: &QueryEngine) {
-    sync_settings_ui(settings_win, engine);
-    let _ = settings_win.show();
-    enable_window_maximize(SETTINGS_TITLE);
-    activate_window_by_title(SETTINGS_TITLE);
-}
-
-fn show_and_focus_palette(window: &PaletteWindow, state_ref: &Rc<RefCell<PaletteState>>) {
-    let (screen_w, screen_h) = primary_screen_size();
-    let x = ((screen_w - WINDOW_WIDTH) * 0.5).max(0.0);
-    let y = (screen_h * 0.20).max(60.0);
-
-    window.window().set_position(LogicalPosition::new(x, y));
-    window.set_context_menu_visible(false);
-
+    // Reset Custom Theme
     {
-        let mut st = state_ref.borrow_mut();
-        st.palette_visible = true;
-        st.last_shown_at = Instant::now();
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_reset_custom_theme(move || {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.theme = "powertoys".to_string();
+            st.engine.config.custom_theme = CustomThemeConfig::default();
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Reset to PowerToys dark theme"));
+            }
+        });
     }
 
-    let _ = window.show();
-    activate_window_by_title(PALETTE_TITLE);
-    window.invoke_focus_input();
+    // Move Category Order
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_move_category(move |index, delta| {
+            let mut st = state_ref.borrow_mut();
+            let len = st.engine.config.category_order.len() as i32;
+            let target = index + delta;
+            if index >= 0 && index < len && target >= 0 && target < len {
+                st.engine
+                    .config
+                    .category_order
+                    .swap(index as usize, target as usize);
+                st.engine.config.save(CONFIG_PATH);
+            }
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Updated category priority order"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Reset Category Order
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_reset_category_order(move || {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.category_order = ShelfCategory::all_default_order()
+                .iter()
+                .map(|c| c.as_str().to_string())
+                .collect();
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Reset category order"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Toggle Individual App Visibility
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_toggle_app_item(move |app_name, visible| {
+            let mut st = state_ref.borrow_mut();
+            st.engine
+                .config
+                .set_app_visibility(app_name.as_str(), visible);
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Updated application visibility"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Add Custom File Scan Path
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_add_scan_path(move |new_path| {
+            let trimmed = new_path.trim();
+            if trimmed.is_empty() {
+                return;
+            }
+            let mut st = state_ref.borrow_mut();
+            st.engine
+                .config
+                .custom_file_scan_paths
+                .push(trimmed.to_string());
+            st.engine.config.save(CONFIG_PATH);
+            st.engine.custom_files =
+                build_custom_files_index(&st.engine.config.custom_file_scan_paths);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Added custom scan path"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Remove Custom File Scan Path
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_remove_scan_path(move |idx| {
+            let mut st = state_ref.borrow_mut();
+            let i = idx as usize;
+            if i < st.engine.config.custom_file_scan_paths.len() {
+                st.engine.config.custom_file_scan_paths.remove(i);
+                st.engine.config.save(CONFIG_PATH);
+                st.engine.custom_files =
+                    build_custom_files_index(&st.engine.config.custom_file_scan_paths);
+            }
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Removed custom scan path"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Save System Paths
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_save_system_paths(move |cmd_path, settings_path| {
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.custom_cmd_path = cmd_path.trim().to_string();
+            st.engine.config.custom_system_settings_path = settings_path.trim().to_string();
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Saved system paths"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Add Custom Command
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_add_custom_command(move |name, command| {
+            let n = name.trim();
+            let c = command.trim();
+            if n.is_empty() || c.is_empty() {
+                return;
+            }
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.custom_commands.push(CustomCommandItem {
+                name: n.to_string(),
+                command: c.to_string(),
+            });
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Added custom command"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Remove Custom Command
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_remove_custom_command(move |idx| {
+            let mut st = state_ref.borrow_mut();
+            let i = idx as usize;
+            if i < st.engine.config.custom_commands.len() {
+                st.engine.config.custom_commands.remove(i);
+                st.engine.config.save(CONFIG_PATH);
+            }
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Removed custom command"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Add Custom Setting
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_add_custom_setting(move |name, path| {
+            let n = name.trim();
+            let p = path.trim();
+            if n.is_empty() || p.is_empty() {
+                return;
+            }
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.custom_settings.push(CustomSettingItem {
+                name: n.to_string(),
+                path: p.to_string(),
+            });
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Added custom setting"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Remove Custom Setting
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_remove_custom_setting(move |idx| {
+            let mut st = state_ref.borrow_mut();
+            let i = idx as usize;
+            if i < st.engine.config.custom_settings.len() {
+                st.engine.config.custom_settings.remove(i);
+                st.engine.config.save(CONFIG_PATH);
+            }
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Removed custom setting"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Add Bang Rule
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_add_bang_rule(move |trigger, url| {
+            let clean_trig = trigger
+                .trim()
+                .trim_start_matches('!')
+                .to_ascii_lowercase();
+            let clean_url = url.trim().to_string();
+            if clean_trig.is_empty() || clean_url.is_empty() {
+                return;
+            }
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.bangs.insert(clean_trig, clean_url);
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Saved bang shortcut"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Remove Bang Rule
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_remove_bang_rule(move |trigger| {
+            let key = trigger.trim().to_ascii_lowercase();
+            let mut st = state_ref.borrow_mut();
+            st.engine.config.bangs.remove(&key);
+            st.engine.config.save(CONFIG_PATH);
+            drop(st);
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                sync_settings_ui(&s_ui, &p_ui, &state_ref.borrow().engine);
+                s_ui.set_status_message(SharedString::from("Removed bang shortcut"));
+                refresh_palette_from_ui(&p_ui, &state_ref);
+            }
+        });
+    }
+
+    // Reload All Indexes & Config
+    {
+        let state_ref = Rc::clone(state);
+        let s_weak = settings.as_weak();
+        let p_weak = palette.as_weak();
+        settings.on_reload_all(move || {
+            let _ = ensure_extensions_guide_file();
+            if let (Some(s_ui), Some(p_ui)) = (s_weak.upgrade(), p_weak.upgrade()) {
+                reload_engine_and_ui(
+                    &state_ref,
+                    &p_ui,
+                    &s_ui,
+                    "Rescanned apps, files, extensions & config",
+                );
+            }
+        });
+    }
 }
 
-fn hide_palette(window: &PaletteWindow, state_ref: &Rc<RefCell<PaletteState>>) {
-    window.set_context_menu_visible(false);
-    window.set_active_bang(SharedString::from(""));
-    window.set_active_bang_label(SharedString::from(""));
-    window.set_query_text(SharedString::from(""));
-    refresh_results(window, state_ref, "", "");
-    let mut st = state_ref.borrow_mut();
-    st.palette_visible = false;
-    st.current_candidates.clear();
-    let _ = window.hide();
-}
-
-fn refresh_results(
-    window: &PaletteWindow,
-    state_ref: &Rc<RefCell<PaletteState>>,
-    active_bang: &str,
-    query: &str,
+fn execute_and_handle_outcome(
+    palette: &PaletteWindow,
+    settings_weak: &slint::Weak<SettingsWindow>,
+    state: &Rc<RefCell<RuntimeState>>,
+    palette_visible: &Rc<Cell<bool>>,
+    candidate_index: i32,
+    run_as_admin: bool,
 ) {
-    let candidates = {
-        let state = state_ref.borrow();
-        state.engine.evaluate_with_bang(active_bang, query)
+    let (candidate_opt, custom_cmd_path) = {
+        let st = state.borrow();
+        let item = if candidate_index >= 0 {
+            st.candidates.get(candidate_index as usize).cloned()
+        } else {
+            None
+        };
+        (item, st.engine.config.custom_cmd_path.clone())
     };
 
-    let mut header_count = 0usize;
-    let mut prev_category: Option<&str> = None;
+    let Some(candidate) = candidate_opt else {
+        return;
+    };
 
-    let ui_items: Vec<UIResultItem> = candidates
-        .iter()
-        .map(|c| {
-            let cat_str = c.category.as_str();
-            let is_first = prev_category != Some(cat_str);
-            if is_first {
-                header_count += 1;
-                prev_category = Some(cat_str);
+    let Ok(outcome) = execute_candidate(&candidate, run_as_admin, &custom_cmd_path) else {
+        return;
+    };
+
+    match outcome {
+        ExecutionOutcome::HidePalette => {
+            reset_and_hide_palette(palette, palette_visible);
+        }
+        ExecutionOutcome::KeepOpenAndRefresh { clear_query } => {
+            if clear_query {
+                palette.set_query_text(SharedString::default());
             }
+            let current_bang = palette.get_active_bang().to_string();
+            let current_q = palette.get_query_text().to_string();
+            refresh_palette_results(palette, state, &current_bang, &current_q);
+            palette.invoke_focus_search_input();
+        }
+        ExecutionOutcome::ActivateBang { bang, label } => {
+            palette.set_active_bang(SharedString::from(bang.as_str()));
+            palette.set_active_bang_label(SharedString::from(label.as_str()));
+            palette.set_query_text(SharedString::default());
+            refresh_palette_results(palette, state, &bang, "");
+            palette.invoke_focus_search_input();
+        }
+        ExecutionOutcome::OpenSettingsTab(tab) => {
+            reset_and_hide_palette(palette, palette_visible);
+            if let Some(s_ui) = settings_weak.upgrade() {
+                sync_settings_ui(&s_ui, palette, &state.borrow().engine);
+                s_ui.set_active_tab(tab);
+                let _ = s_ui.show();
+                system::enable_window_maximize(SETTINGS_WIN_TITLE);
+                system::activate_window_by_title(SETTINGS_WIN_TITLE);
+            }
+        }
+        ExecutionOutcome::ReloadAll => {
+            if let Some(s_ui) = settings_weak.upgrade() {
+                reload_engine_and_ui(state, palette, &s_ui, "Reloaded indexes & configuration");
+            }
+            reset_and_hide_palette(palette, palette_visible);
+        }
+    }
+}
 
-            let score_label = if c.score > 0 && c.score < 10_000 {
-                format!("score {}", c.score)
+fn reload_engine_and_ui(
+    state: &Rc<RefCell<RuntimeState>>,
+    palette: &PaletteWindow,
+    settings: &SettingsWindow,
+    status_msg: &str,
+) {
+    let new_cfg = AppConfig::load_or_create(CONFIG_PATH);
+    let new_apps = build_start_menu_index();
+    let new_files = build_custom_files_index(&new_cfg.custom_file_scan_paths);
+    {
+        let mut st = state.borrow_mut();
+        st.engine = QueryEngine::new(new_cfg, new_apps, new_files);
+    }
+    sync_settings_ui(settings, palette, &state.borrow().engine);
+    settings.set_status_message(SharedString::from(status_msg));
+    refresh_palette_from_ui(palette, state);
+}
+
+fn refresh_palette_from_ui(palette: &PaletteWindow, state: &Rc<RefCell<RuntimeState>>) {
+    let bang = palette.get_active_bang().to_string();
+    let q = palette.get_query_text().to_string();
+    refresh_palette_results(palette, state, &bang, &q);
+}
+
+fn sync_settings_ui(settings: &SettingsWindow, palette: &PaletteWindow, engine: &QueryEngine) {
+    let cfg = &engine.config;
+
+    apply_theme_to_windows(palette, settings, cfg);
+
+    settings.set_show_apps(cfg.show_apps);
+    settings.set_run_on_startup(cfg.run_on_startup);
+    settings.set_hotkey(SharedString::from(cfg.hotkey.as_str()));
+    settings.set_theme_mode(SharedString::from(cfg.theme.as_str()));
+
+    settings.set_enable_cmdpal_shortcuts(cfg.enable_cmdpal_shortcuts);
+    settings.set_enable_builtin_cmds(cfg.enable_builtin_cmds);
+    settings.set_enable_builtin_settings(cfg.enable_builtin_settings);
+
+    let builtin_cmds: Vec<BuiltinToggleEntry> = BUILTIN_COMMANDS
+        .iter()
+        .map(|spec| BuiltinToggleEntry {
+            id: SharedString::from(spec.id),
+            title: SharedString::from(spec.title),
+            subtitle: SharedString::from(spec.subtitle),
+            enabled: cfg.is_builtin_cmd_enabled(spec.id),
+        })
+        .collect();
+    settings.set_builtin_cmd_entries(ModelRc::new(VecModel::from(builtin_cmds)));
+
+    let builtin_settings: Vec<BuiltinToggleEntry> = BUILTIN_SETTINGS
+        .iter()
+        .map(|spec| BuiltinToggleEntry {
+            id: SharedString::from(spec.id),
+            title: SharedString::from(spec.title),
+            subtitle: SharedString::from(spec.subtitle),
+            enabled: cfg.is_builtin_setting_enabled(spec.id),
+        })
+        .collect();
+    settings.set_builtin_setting_entries(ModelRc::new(VecModel::from(builtin_settings)));
+
+    settings.set_default_search_engine(SharedString::from(cfg.default_search_engine.as_str()));
+    settings.set_custom_search_url(SharedString::from(cfg.custom_search_url.as_str()));
+
+    if let Some(np) = cfg.notepad_extension() {
+        settings.set_notepad_installed(true);
+        settings.set_notepad_file_path(SharedString::from(np.target_file.as_str()));
+    } else {
+        settings.set_notepad_installed(false);
+    }
+
+    let ext_entries: Vec<ExtensionUiEntry> = cfg
+        .extensions
+        .iter()
+        .map(|ext| {
+            let meta = if !ext.target_file.is_empty() {
+                format!("File: {} • {}", ext.target_file, ext.description)
+            } else if !ext.command_template.is_empty() {
+                format!("Template: {} • {}", ext.command_template, ext.description)
             } else {
-                String::new()
+                ext.description.clone()
             };
 
-            UIResultItem {
-                title: SharedString::from(c.title.as_str()),
-                badge: SharedString::from(c.badge),
-                category: SharedString::from(cat_str),
-                category_header: SharedString::from(c.category.header_title()),
-                icon_text: SharedString::from(c.category.icon_glyph()),
-                score_text: SharedString::from(score_label.as_str()),
-                can_elevate: c.can_elevate,
-                is_first_in_category: is_first,
+            ExtensionUiEntry {
+                id: SharedString::from(ext.id.as_str()),
+                name: SharedString::from(ext.name.as_str()),
+                description: SharedString::from(ext.description.as_str()),
+                bang: SharedString::from(ext.bang.as_str()),
+                icon: SharedString::from(ext.icon.as_str()),
+                kind: SharedString::from(ext.kind.as_str()),
+                target_file: SharedString::from(ext.target_file.as_str()),
+                target_meta: SharedString::from(meta.as_str()),
+                is_file_backed: ext.kind.is_file_backed(),
+                enabled: ext.enabled,
+                is_builtin: ext.id.eq_ignore_ascii_case(BUILTIN_NOTEPAD_ID),
             }
         })
         .collect();
+    settings.set_extension_entries(ModelRc::new(VecModel::from(ext_entries)));
 
-    {
-        let mut state = state_ref.borrow_mut();
-        state.current_candidates = candidates;
-    }
+    settings.set_custom_window_bg(SharedString::from(cfg.custom_theme.window_bg.as_str()));
+    settings.set_custom_surface_bg(SharedString::from(cfg.custom_theme.surface_bg.as_str()));
+    settings.set_custom_card_bg(SharedString::from(cfg.custom_theme.card_bg.as_str()));
+    settings.set_custom_selected_bg(SharedString::from(cfg.custom_theme.selected_bg.as_str()));
+    settings.set_custom_border(SharedString::from(cfg.custom_theme.border.as_str()));
+    settings.set_custom_accent(SharedString::from(cfg.custom_theme.accent.as_str()));
+    settings.set_custom_text_primary(SharedString::from(cfg.custom_theme.text_primary.as_str()));
+    settings.set_custom_text_muted(SharedString::from(cfg.custom_theme.text_muted.as_str()));
 
-    let target_height = if ui_items.is_empty() {
-        COMPACT_HEIGHT
+    settings.set_custom_cmd_path(SharedString::from(cfg.custom_cmd_path.as_str()));
+    settings.set_custom_system_settings_path(SharedString::from(
+        cfg.custom_system_settings_path.as_str(),
+    ));
+
+    let cat_entries: Vec<CategoryOrderEntry> = cfg
+        .ordered_categories()
+        .into_iter()
+        .map(|cat| CategoryOrderEntry {
+            id: SharedString::from(cat.as_str()),
+            display_name: SharedString::from(cat.display_name()),
+            description: SharedString::from(cat.description()),
+            icon: SharedString::from(cat.icon_glyph()),
+        })
+        .collect();
+    settings.set_category_entries(ModelRc::new(VecModel::from(cat_entries)));
+
+    let app_entries: Vec<AppToggleEntry> = engine
+        .apps
+        .iter()
+        .map(|app| AppToggleEntry {
+            name: SharedString::from(app.name.as_str()),
+            path: SharedString::from(app.path.to_string_lossy().as_ref()),
+            enabled: !cfg.is_app_hidden(&app.name),
+        })
+        .collect();
+    settings.set_app_entries(ModelRc::new(VecModel::from(app_entries)));
+
+    let scan_paths: Vec<SharedString> = cfg
+        .custom_file_scan_paths
+        .iter()
+        .map(|p| SharedString::from(p.as_str()))
+        .collect();
+    settings.set_file_scan_paths(ModelRc::new(VecModel::from(scan_paths)));
+
+    let custom_cmds: Vec<CustomCmdEntry> = cfg
+        .custom_commands
+        .iter()
+        .map(|c| CustomCmdEntry {
+            name: SharedString::from(c.name.as_str()),
+            command: SharedString::from(c.command.as_str()),
+        })
+        .collect();
+    settings.set_custom_commands(ModelRc::new(VecModel::from(custom_cmds)));
+
+    let custom_sts: Vec<CustomSettingEntry> = cfg
+        .custom_settings
+        .iter()
+        .map(|s| CustomSettingEntry {
+            name: SharedString::from(s.name.as_str()),
+            path: SharedString::from(s.path.as_str()),
+        })
+        .collect();
+    settings.set_custom_settings(ModelRc::new(VecModel::from(custom_sts)));
+
+    let mut bang_vec: Vec<BangRuleEntry> = cfg
+        .bangs
+        .iter()
+        .map(|(k, v)| BangRuleEntry {
+            trigger: SharedString::from(k.as_str()),
+            url_template: SharedString::from(v.as_str()),
+        })
+        .collect();
+    bang_vec.sort_by(|a, b| a.trigger.cmp(&b.trigger));
+    settings.set_bang_entries(ModelRc::new(VecModel::from(bang_vec)));
+}
+
+fn apply_theme_to_windows(palette: &PaletteWindow, settings: &SettingsWindow, cfg: &AppConfig) {
+    let pt_default = CustomThemeConfig::default();
+    let active = if cfg.theme == "custom" {
+        &cfg.custom_theme
     } else {
-        let rows_h = (ui_items.len() as f32) * 45.0;
-        let headers_h = (header_count as f32) * 25.0;
-        (COMPACT_HEIGHT + rows_h + headers_h + 42.0).min(MAX_EXPANDED_HEIGHT)
+        &pt_default
     };
 
-    window.set_dynamic_height(target_height);
-    window
-        .window()
-        .set_size(LogicalSize::new(WINDOW_WIDTH, target_height));
+    let win_bg = parse_hex_color(&active.window_bg, Color::from_rgb_u8(0x1f, 0x1f, 0x1f));
+    let surf_bg = parse_hex_color(&active.surface_bg, Color::from_rgb_u8(0x2b, 0x2b, 0x2b));
+    let card_bg = parse_hex_color(&active.card_bg, Color::from_rgb_u8(0x28, 0x28, 0x28));
+    let sel_bg = parse_hex_color(&active.selected_bg, Color::from_rgb_u8(0x38, 0x38, 0x38));
+    let border = parse_hex_color(&active.border, Color::from_rgb_u8(0x3d, 0x3d, 0x3d));
+    let accent = parse_hex_color(&active.accent, Color::from_rgb_u8(0x60, 0xcd, 0xff));
+    let txt_pri = parse_hex_color(&active.text_primary, Color::from_rgb_u8(0xff, 0xff, 0xff));
+    let txt_mut = parse_hex_color(&active.text_muted, Color::from_rgb_u8(0x9d, 0x9d, 0x9d));
 
-    window.set_selected_index(0);
-    window.set_results(ModelRc::from(Rc::new(VecModel::from(ui_items))));
+    palette.set_theme_window_bg(win_bg);
+    palette.set_theme_surface_bg(surf_bg);
+    palette.set_theme_card_bg(card_bg);
+    palette.set_theme_selected_bg(sel_bg);
+    palette.set_theme_border(border);
+    palette.set_theme_accent(accent);
+    palette.set_theme_text_primary(txt_pri);
+    palette.set_theme_text_muted(txt_mut);
+
+    settings.set_theme_window_bg(win_bg);
+    settings.set_theme_surface_bg(surf_bg);
+    settings.set_theme_card_bg(card_bg);
+    settings.set_theme_selected_bg(sel_bg);
+    settings.set_theme_border(border);
+    settings.set_theme_accent(accent);
+    settings.set_theme_text_primary(txt_pri);
+    settings.set_theme_text_muted(txt_mut);
 }
 
 fn parse_hex_color(hex: &str, fallback: Color) -> Color {
@@ -418,529 +1337,95 @@ fn parse_hex_color(hex: &str, fallback: Color) -> Color {
     fallback
 }
 
-fn build_ui_theme_colors(config: &AppConfig) -> UIThemeColors {
-    let default_pt = UIThemeColors {
-        window_bg: Color::from_rgb_u8(0x1f, 0x1f, 0x1f),
-        surface_bg: Color::from_rgb_u8(0x2b, 0x2b, 0x2b),
-        card_bg: Color::from_rgb_u8(0x28, 0x28, 0x28),
-        hover_bg: Color::from_rgb_u8(0x32, 0x32, 0x32),
-        selected_bg: Color::from_rgb_u8(0x38, 0x38, 0x38),
-        border: Color::from_rgb_u8(0x3d, 0x3d, 0x3d),
-        accent: Color::from_rgb_u8(0x60, 0xcd, 0xff),
-        text_primary: Color::from_rgb_u8(0xff, 0xff, 0xff),
-        text_secondary: Color::from_rgb_u8(0xd6, 0xd6, 0xd6),
-        text_muted: Color::from_rgb_u8(0x9d, 0x9d, 0x9d),
+fn refresh_palette_results(
+    ui: &PaletteWindow,
+    state: &Rc<RefCell<RuntimeState>>,
+    active_bang: &str,
+    query: &str,
+) {
+    let evaluated = {
+        let st = state.borrow();
+        st.engine.evaluate_with_bang(active_bang, query)
     };
 
-    if config.theme == "custom" {
-        let ct = &config.custom_theme;
-        let selected = parse_hex_color(&ct.selected_bg, default_pt.selected_bg);
-        let text_pri = parse_hex_color(&ct.text_primary, default_pt.text_primary);
-        UIThemeColors {
-            window_bg: parse_hex_color(&ct.window_bg, default_pt.window_bg),
-            surface_bg: parse_hex_color(&ct.surface_bg, default_pt.surface_bg),
-            card_bg: parse_hex_color(&ct.card_bg, default_pt.card_bg),
-            hover_bg: selected,
-            selected_bg: selected,
-            border: parse_hex_color(&ct.border, default_pt.border),
-            accent: parse_hex_color(&ct.accent, default_pt.accent),
-            text_primary: text_pri,
-            text_secondary: text_pri,
-            text_muted: parse_hex_color(&ct.text_muted, default_pt.text_muted),
+    let mut ui_entries: Vec<PaletteEntry> = Vec::new();
+    let mut current_cat: Option<ShelfCategory> = None;
+
+    for (idx, item) in evaluated.iter().enumerate() {
+        if current_cat != Some(item.category) {
+            current_cat = Some(item.category);
+            ui_entries.push(PaletteEntry {
+                is_header: true,
+                candidate_index: -1,
+                title: SharedString::from(item.category.header_title()),
+                subtitle: SharedString::default(),
+                badge: SharedString::default(),
+                icon: SharedString::from(item.category.icon_glyph()),
+                can_elevate: false,
+            });
         }
-    } else {
-        default_pt
+
+        let row_icon = item
+            .icon_override
+            .as_deref()
+            .unwrap_or_else(|| item.category.icon_glyph());
+
+        ui_entries.push(PaletteEntry {
+            is_header: false,
+            candidate_index: idx as i32,
+            title: SharedString::from(item.title.as_str()),
+            subtitle: SharedString::from(item.subtitle.as_str()),
+            badge: SharedString::from(item.badge.as_str()),
+            icon: SharedString::from(row_icon),
+            can_elevate: item.can_elevate,
+        });
     }
+
+    let total_candidates = evaluated.len() as i32;
+    {
+        let mut st = state.borrow_mut();
+        st.candidates = evaluated;
+    }
+
+    ui.set_total_candidates(total_candidates);
+    ui.set_selected_candidate_index(0);
+    ui.set_entries(ModelRc::new(VecModel::from(ui_entries)));
 }
 
-fn sync_settings_ui(settings_ui: &SettingsWindow, engine: &QueryEngine) {
-    let config = &engine.config;
-    let ui_theme = build_ui_theme_colors(config);
-
-    settings_ui.set_theme_mode(SharedString::from(config.theme.as_str()));
-    settings_ui.set_theme(ui_theme);
-
-    settings_ui.set_custom_window_bg(SharedString::from(config.custom_theme.window_bg.as_str()));
-    settings_ui.set_custom_surface_bg(SharedString::from(config.custom_theme.surface_bg.as_str()));
-    settings_ui.set_custom_card_bg(SharedString::from(config.custom_theme.card_bg.as_str()));
-    settings_ui.set_custom_selected_bg(SharedString::from(config.custom_theme.selected_bg.as_str()));
-    settings_ui.set_custom_border(SharedString::from(config.custom_theme.border.as_str()));
-    settings_ui.set_custom_accent(SharedString::from(config.custom_theme.accent.as_str()));
-    settings_ui.set_custom_text_primary(SharedString::from(
-        config.custom_theme.text_primary.as_str(),
-    ));
-    settings_ui.set_custom_text_muted(SharedString::from(config.custom_theme.text_muted.as_str()));
-
-    settings_ui.set_show_apps(config.show_apps);
-    settings_ui.set_custom_cmd_path(SharedString::from(config.custom_cmd_path.as_str()));
-    settings_ui.set_custom_settings_path(SharedString::from(
-        config.custom_system_settings_path.as_str(),
-    ));
-    settings_ui.set_indexed_files_count(engine.custom_files.len() as i32);
-
-    // 1. Category Order
-    let cat_items: Vec<UICategoryOrderItem> = config
-        .ordered_categories()
-        .into_iter()
-        .map(|cat| UICategoryOrderItem {
-            id: SharedString::from(cat.as_str()),
-            label: SharedString::from(cat.display_name()),
-            description: SharedString::from(cat.description()),
-        })
-        .collect();
-    settings_ui.set_category_order(ModelRc::from(Rc::new(VecModel::from(cat_items))));
-
-    // 2. Installed Apps with Checkboxes
-    let filter_q = settings_ui.get_app_filter_text().to_ascii_lowercase();
-    let app_toggle_items: Vec<UIAppToggleItem> = engine
-        .apps
-        .iter()
-        .filter(|app| filter_q.trim().is_empty() || app.name_lower.contains(filter_q.trim()))
-        .map(|app| UIAppToggleItem {
-            name: SharedString::from(app.name.as_str()),
-            visible: !config.is_app_hidden(&app.name),
-        })
-        .collect();
-    settings_ui.set_app_items(ModelRc::from(Rc::new(VecModel::from(app_toggle_items))));
-
-    // 3. Custom Commands
-    let cmd_items: Vec<UISimpleEntry> = config
-        .custom_commands
-        .iter()
-        .map(|c| UISimpleEntry {
-            name: SharedString::from(c.name.as_str()),
-            target: SharedString::from(c.command.as_str()),
-        })
-        .collect();
-    settings_ui.set_custom_commands(ModelRc::from(Rc::new(VecModel::from(cmd_items))));
-
-    // 4. Custom System Settings
-    let set_items: Vec<UISimpleEntry> = config
-        .custom_settings
-        .iter()
-        .map(|s| UISimpleEntry {
-            name: SharedString::from(s.name.as_str()),
-            target: SharedString::from(s.path.as_str()),
-        })
-        .collect();
-    settings_ui.set_custom_settings(ModelRc::from(Rc::new(VecModel::from(set_items))));
-
-    // 5. Custom File Scan Paths
-    let scan_paths: Vec<SharedString> = config
-        .custom_file_scan_paths
-        .iter()
-        .map(|p| SharedString::from(p.as_str()))
-        .collect();
-    settings_ui.set_custom_file_scan_paths(ModelRc::from(Rc::new(VecModel::from(scan_paths))));
-
-    // 6. Web Bangs
-    let mut bangs: Vec<UIBangEntry> = config
-        .bangs
-        .iter()
-        .map(|(k, v)| UIBangEntry {
-            key: SharedString::from(k.as_str()),
-            url: SharedString::from(v.as_str()),
-        })
-        .collect();
-    bangs.sort_by(|a, b| a.key.cmp(&b.key));
-    settings_ui.set_bang_entries(ModelRc::from(Rc::new(VecModel::from(bangs))));
-}
-
-fn wire_settings_callbacks(
-    settings_ui: &SettingsWindow,
-    palette_ui: &PaletteWindow,
-    state: &Rc<RefCell<PaletteState>>,
+fn summon_palette(
+    ui: &PaletteWindow,
+    state: &Rc<RefCell<RuntimeState>>,
+    palette_visible: &Rc<Cell<bool>>,
+    focus_grace_ticks: &Rc<Cell<u8>>,
 ) {
-    // Use PowerToys Default Theme
-    {
-        let settings_weak = settings_ui.as_weak();
-        let palette_weak = palette_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_use_powertoys_theme(move || {
-            let ui_theme = {
-                let mut st = state_ref.borrow_mut();
-                st.engine.config.theme = "powertoys".to_string();
-                st.engine.config.save(CONFIG_FILE_PATH);
-                build_ui_theme_colors(&st.engine.config)
-            };
-            if let Some(pal) = palette_weak.upgrade() {
-                pal.set_theme(ui_theme);
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from(
-                    "Applied PowerToys Command Palette theme!",
-                ));
-            }
-        });
-    }
+    center_palette_on_screen(ui);
+    ui.set_active_bang(SharedString::default());
+    ui.set_active_bang_label(SharedString::default());
+    ui.set_query_text(SharedString::default());
+    refresh_palette_results(ui, state, "", "");
+    let _ = ui.show();
+    palette_visible.set(true);
+    focus_grace_ticks.set(8);
+    system::activate_window_by_title(PALETTE_WIN_TITLE);
+    ui.invoke_focus_search_input();
+}
 
-    // Save & Apply User Custom Theme
-    {
-        let settings_weak = settings_ui.as_weak();
-        let palette_weak = palette_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_save_custom_theme(
-            move |win_bg, surf_bg, card_bg, sel_bg, border, accent, txt_pri, txt_muted| {
-                let ui_theme = {
-                    let mut st = state_ref.borrow_mut();
-                    st.engine.config.theme = "custom".to_string();
-                    st.engine.config.custom_theme = CustomThemeConfig {
-                        window_bg: win_bg.trim().to_string(),
-                        surface_bg: surf_bg.trim().to_string(),
-                        card_bg: card_bg.trim().to_string(),
-                        selected_bg: sel_bg.trim().to_string(),
-                        border: border.trim().to_string(),
-                        accent: accent.trim().to_string(),
-                        text_primary: txt_pri.trim().to_string(),
-                        text_muted: txt_muted.trim().to_string(),
-                    };
-                    st.engine.config.save(CONFIG_FILE_PATH);
-                    build_ui_theme_colors(&st.engine.config)
-                };
-                if let Some(pal) = palette_weak.upgrade() {
-                    pal.set_theme(ui_theme);
-                }
-                if let Some(win) = settings_weak.upgrade() {
-                    sync_settings_ui(&win, &state_ref.borrow().engine);
-                    win.set_status_message(SharedString::from("Applied & saved Custom Theme!"));
-                }
-            },
-        );
-    }
+fn reset_and_hide_palette(ui: &PaletteWindow, palette_visible: &Rc<Cell<bool>>) {
+    palette_visible.set(false);
+    ui.set_active_bang(SharedString::default());
+    ui.set_active_bang_label(SharedString::default());
+    ui.set_query_text(SharedString::default());
+    ui.set_entries(ModelRc::new(VecModel::from(Vec::<PaletteEntry>::new())));
+    ui.set_total_candidates(0);
+    ui.set_selected_candidate_index(0);
+    let _ = ui.hide();
+}
 
-    // Move Category Up
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_move_category_up(move |idx| {
-            let i = idx as usize;
-            if i > 0 {
-                {
-                    let mut st = state_ref.borrow_mut();
-                    if i < st.engine.config.category_order.len() {
-                        st.engine.config.category_order.swap(i, i - 1);
-                        st.engine.config.save(CONFIG_FILE_PATH);
-                    }
-                }
-                if let Some(win) = settings_weak.upgrade() {
-                    sync_settings_ui(&win, &state_ref.borrow().engine);
-                    win.set_status_message(SharedString::from("Updated category order"));
-                }
-            }
-        });
-    }
-
-    // Move Category Down
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_move_category_down(move |idx| {
-            let i = idx as usize;
-            {
-                let mut st = state_ref.borrow_mut();
-                if i + 1 < st.engine.config.category_order.len() {
-                    st.engine.config.category_order.swap(i, i + 1);
-                    st.engine.config.save(CONFIG_FILE_PATH);
-                }
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from("Updated category order"));
-            }
-        });
-    }
-
-    // Filter Installed Apps List
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_filter_apps_changed(move |_| {
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-            }
-        });
-    }
-
-    // Toggle Individual App Checkbox
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_toggle_app_item(move |app_name, visible| {
-            {
-                let mut st = state_ref.borrow_mut();
-                st.engine.config.set_app_visibility(app_name.as_str(), visible);
-                st.engine.config.save(CONFIG_FILE_PATH);
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                let msg = if visible {
-                    format!("'{}' enabled in suggestions", app_name)
-                } else {
-                    format!("'{}' hidden from suggestions", app_name)
-                };
-                win.set_status_message(SharedString::from(msg));
-            }
-        });
-    }
-
-    // Show All / Hide All Apps
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_set_all_apps_visible(move |visible| {
-            {
-                let mut st = state_ref.borrow_mut();
-                if visible {
-                    st.engine.config.hidden_apps.clear();
-                } else {
-                    st.engine.config.hidden_apps =
-                        st.engine.apps.iter().map(|a| a.name.clone()).collect();
-                }
-                st.engine.config.save(CONFIG_FILE_PATH);
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                let msg = if visible {
-                    "All apps enabled in suggestions"
-                } else {
-                    "All apps hidden from suggestions"
-                };
-                win.set_status_message(SharedString::from(msg));
-            }
-        });
-    }
-
-    // Save Default CMD Path
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_save_cmd_path(move |cmd_path| {
-            {
-                let mut st = state_ref.borrow_mut();
-                st.engine.config.custom_cmd_path = cmd_path.to_string();
-                st.engine.config.save(CONFIG_FILE_PATH);
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from("Saved default CMD path!"));
-            }
-        });
-    }
-
-    // Add Custom Command
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_add_custom_command(move |name, command| {
-            let n = name.trim().to_string();
-            let c = command.trim().to_string();
-            if n.is_empty() || c.is_empty() {
-                return;
-            }
-            {
-                let mut st = state_ref.borrow_mut();
-                st.engine
-                    .config
-                    .custom_commands
-                    .push(CustomCommandItem { name: n, command: c });
-                st.engine.config.save(CONFIG_FILE_PATH);
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from("Added custom command!"));
-            }
-        });
-    }
-
-    // Remove Custom Command
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_remove_custom_command(move |idx| {
-            let i = idx as usize;
-            {
-                let mut st = state_ref.borrow_mut();
-                if i < st.engine.config.custom_commands.len() {
-                    st.engine.config.custom_commands.remove(i);
-                    st.engine.config.save(CONFIG_FILE_PATH);
-                }
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from("Removed custom command"));
-            }
-        });
-    }
-
-    // Save Default System Settings Path
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_save_settings_path(move |settings_path| {
-            {
-                let mut st = state_ref.borrow_mut();
-                st.engine.config.custom_system_settings_path = settings_path.to_string();
-                st.engine.config.save(CONFIG_FILE_PATH);
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from("Saved default System Settings path!"));
-            }
-        });
-    }
-
-    // Add Custom System Setting
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_add_custom_setting(move |name, path| {
-            let n = name.trim().to_string();
-            let p = path.trim().to_string();
-            if n.is_empty() || p.is_empty() {
-                return;
-            }
-            {
-                let mut st = state_ref.borrow_mut();
-                st.engine
-                    .config
-                    .custom_settings
-                    .push(CustomSettingItem { name: n, path: p });
-                st.engine.config.save(CONFIG_FILE_PATH);
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from("Added custom system setting!"));
-            }
-        });
-    }
-
-    // Remove Custom System Setting
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_remove_custom_setting(move |idx| {
-            let i = idx as usize;
-            {
-                let mut st = state_ref.borrow_mut();
-                if i < st.engine.config.custom_settings.len() {
-                    st.engine.config.custom_settings.remove(i);
-                    st.engine.config.save(CONFIG_FILE_PATH);
-                }
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from("Removed custom system setting"));
-            }
-        });
-    }
-
-    // Add Custom File Scan Path
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_add_file_scan_path(move |scan_path| {
-            let trimmed = scan_path.trim().to_string();
-            if !trimmed.is_empty() {
-                {
-                    let mut st = state_ref.borrow_mut();
-                    st.engine.config.custom_file_scan_paths.push(trimmed);
-                    st.engine.config.save(CONFIG_FILE_PATH);
-                    st.engine.custom_files =
-                        build_custom_files_index(&st.engine.config.custom_file_scan_paths);
-                }
-                if let Some(win) = settings_weak.upgrade() {
-                    sync_settings_ui(&win, &state_ref.borrow().engine);
-                    win.set_status_message(SharedString::from("Scanned custom path for files!"));
-                }
-            }
-        });
-    }
-
-    // Remove Custom File Scan Path
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_remove_file_scan_path(move |idx| {
-            let i = idx as usize;
-            {
-                let mut st = state_ref.borrow_mut();
-                if i < st.engine.config.custom_file_scan_paths.len() {
-                    st.engine.config.custom_file_scan_paths.remove(i);
-                    st.engine.config.save(CONFIG_FILE_PATH);
-                    st.engine.custom_files =
-                        build_custom_files_index(&st.engine.config.custom_file_scan_paths);
-                }
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from("Removed scan path & updated index"));
-            }
-        });
-    }
-
-    // Add Web Bang
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_add_bang(move |key, url| {
-            let k = key.trim().to_ascii_lowercase();
-            let u = url.trim().to_string();
-            if !k.is_empty() && !u.is_empty() {
-                {
-                    let mut st = state_ref.borrow_mut();
-                    st.engine.config.bangs.insert(k, u);
-                    st.engine.config.save(CONFIG_FILE_PATH);
-                }
-                if let Some(win) = settings_weak.upgrade() {
-                    sync_settings_ui(&win, &state_ref.borrow().engine);
-                    win.set_status_message(SharedString::from("Saved web bang shortcut!"));
-                }
-            }
-        });
-    }
-
-    // Remove Web Bang
-    {
-        let settings_weak = settings_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_remove_bang(move |key| {
-            {
-                let mut st = state_ref.borrow_mut();
-                st.engine.config.bangs.remove(key.as_str());
-                st.engine.config.save(CONFIG_FILE_PATH);
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from("Removed web bang shortcut"));
-            }
-        });
-    }
-
-    // Reload All Indexes & Config
-    {
-        let settings_weak = settings_ui.as_weak();
-        let palette_weak = palette_ui.as_weak();
-        let state_ref = Rc::clone(state);
-        settings_ui.on_reload_index(move || {
-            let cfg = AppConfig::load_or_create(CONFIG_FILE_PATH);
-            let apps = build_start_menu_index();
-            let files = build_custom_files_index(&cfg.custom_file_scan_paths);
-            let ui_theme = build_ui_theme_colors(&cfg);
-            {
-                let mut st = state_ref.borrow_mut();
-                st.engine = QueryEngine::new(cfg, apps, files);
-            }
-            if let Some(win) = settings_weak.upgrade() {
-                sync_settings_ui(&win, &state_ref.borrow().engine);
-                win.set_status_message(SharedString::from("Rescanned Apps & Custom File Paths!"));
-            }
-            if let Some(pal) = palette_weak.upgrade() {
-                pal.set_theme(ui_theme);
-                let bang = pal.get_active_bang().to_string();
-                let q = pal.get_query_text().to_string();
-                refresh_results(&pal, &state_ref, &bang, &q);
-            }
-        });
-    }
+fn center_palette_on_screen(ui: &PaletteWindow) {
+    let (screen_w, screen_h) = system::primary_screen_size();
+    let win_w = 680;
+    let x = ((screen_w - win_w) / 2).max(0);
+    let y = (screen_h / 5).max(80);
+    ui.window()
+        .set_position(slint::PhysicalPosition::new(x, y));
 }

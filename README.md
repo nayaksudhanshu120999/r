@@ -1,150 +1,128 @@
-# ⚡ cmdpal-rs
+# ⚡ cmdpal-rs — Ultra-Lightweight Windows Command Palette & Extension Launcher
 
-[![Build Status](https://github.com/nayaksudhanshu120999/r/actions/workflows/build.yml/badge.svg)](https://github.com/nayaksudhanshu120999/r/actions)
-![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4?logo=windows)
-![Rust](https://img.shields.io/badge/rust-2021%20edition-dea584?logo=rust)
-![UI](https://img.shields.io/badge/UI-Slint%201.8-6366f1)
-
-**`cmdpal-rs`** is an ultra-lightweight, native Windows Command Palette written in **Rust** and **Slint**. Designed for speed and zero background bloat, it stays resident in the Windows system tray and summons instantaneously from anywhere via **`Ctrl + Space`** (or your own custom global hotkey).
+**`cmdpal-rs`** is a fast, native Windows Command Palette written in **Rust**, **Slint**, and direct **Win32 APIs**. It combines application launching, a 7-tier smart fuzzy/acronym ranking engine, separated **CmdPal** vs **Windows System Settings**, toggleable inbuilt shortcuts, a **pluggable Extension System** (including an inline **`.txt` / `.md` Notepad & File Viewer** via the `note` bang), an inline scientific/programmer calculator, and customizable web search bangs.
 
 ---
 
-## ✨ Features
+## ✨ Key Features
 
-* **🚀 Always-On & Customizable Global Shortcut (`Ctrl + Space` by default)**
-  * Runs silently in the background with **Single-Instance enforcement** (launching the app again focuses the existing instance instead of spawning duplicate processes or tray icons).
-  * Switch hotkeys **live without restarting**—type `hotkey` or `shortcut` in the palette to pick a preset (`Ctrl+Space`, `Alt+Space`, `Ctrl+Shift+Space`, `Ctrl+Alt+Space`, `Alt+Q`), or configure any combination of `Ctrl`, `Alt`, `Shift`, `Win` + `Space`, `Enter`, `Tab`, `A–Z`, `0–9`, or `F1–F12` in `config.toml`.
-* **🔄 Run on Windows Startup**
-  * Toggle automatic launch at Windows login (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) directly from the **System Tray right-click menu**, by typing **`startup`** / **`autostart`** in the palette, or via `run_on_startup = true` in `config.toml`.
-* **🧮 Inline Calculator & Base Converter**
-  * Evaluate arithmetic expressions (`145 * 32`, `2 ^ 10`), scientific functions (`sqrt(144)`, `sin(pi / 2)`, `log(100)`), hex/binary literals (`0xff + 1`, `0b1010 * 2`), and base conversions (`255 to hex`, `0xff to dec`, `42 to bin`) in real time.
-  * Press **`Enter`** on any calculator result to copy the answer directly to the Windows clipboard.
-* **🔗 Direct URL & File/Folder Path Detection**
-  * **File & Folder Paths**: Paste or type local paths (`C:\Windows\System32`, `"C:\Program Files"`), UNC paths (`\\server\share`), or environment/home paths (`%APPDATA%`, `%TEMP%`, `~\Downloads`) to open the file or folder directly.
-  * **Direct URLs**: Type or paste URLs (`https://...`, `www.rust-lang.org`), local dev servers (`localhost:3000`, `127.0.0.1:8080`), or bare domains (`github.com/rust-lang`, `crates.io`) to launch them straight in your default browser via native Win32 `ShellExecuteW`.
-* **📌 Taskbar System Tray Integration**
-  * Native Windows notification area icon with left-click toggle and right-click context menu (*Open Command Palette*, *✓ Run on Windows Startup*, *Settings...*, *Reload Apps & Config*, *Quit*).
-* **🎯 Smart Auto-Hide**
-  * Automatically hides the palette as soon as a task is executed, when the window loses focus, when you click outside the palette, or when `Esc` is pressed.
-* **🔍 Fuzzy Search Engine (`SkimMatcherV2`)**
-  * Evaluates Installed Applications, System Settings, System Power Commands, and Custom Files in real time.
-  * Ranks suggestions directly by their **fuzzy match score**, using your configured **Category Order of Preference** as a smart tie-breaker.
-* **🏷️ Interactive Bang Pill Chips**
-  * Type a bang key (such as `yt`, `gh`, `g`, `rs`) and press **`Space`** to automatically convert it into a **`🌐 YT ✕`** pill chip inside the search bar.
-  * Type your search query right after the chip and press `Enter` to search, or press `Backspace` on an empty input to remove the chip.
-* **🎨 PowerToys Command Palette Theme & Custom Theme Builder**
-  * Ships with a default **PowerToys Command Palette** theme (Windows 11 Dark Acrylic `#1f1f1f` with Fluent Cyan `#60cdff` accents).
-  * Includes a live **Custom Theme Builder** (`#RRGGBB` hex editor) in Settings to customize every surface, border, accent, and text color.
-* **📂 Targeted Custom File Scanner (No Full-Disk Scan)**
-  * Add specific folders in Settings to index their files and open them directly from the palette—without slowing down your PC with a full-disk scan.
-* **🛠️ Full-Featured Settings GUI**
-  * Resizable & maximizable native Settings window to manage themes, category priority order, installed app visibility checkboxes, custom commands, custom settings, file scan paths, and web bangs.
+### 1. Separated Categories (`CmdPal` vs `Windows Settings` vs `System Commands` vs `Extensions`)
+Unlike launchers that mix internal app preferences with OS settings, `cmdpal-rs` cleanly separates results into 7 priority- customizable shelves:
+- **`🧩 EXTENSIONS & PLUGINS` (`Extensions`)** — Interactive extensions like the built-in **`note` Quick Notepad & File Viewer** and custom user plugins.
+- **`🎛 CMDPAL SETTINGS & ACTIONS` (`CmdPal`)** — Command Palette's own settings, theme switcher, hotkey presets, startup toggle, default search engine switcher, and index reloader.
+- **`⚡ SYSTEM COMMANDS` (`Cmds`)** — 18 inbuilt Windows system/power/admin commands (Task Manager, Device Manager, Services, Registry Editor, Flush DNS, Lock, Sleep, Restart, Shutdown, etc.), inline calculator, and custom shell commands.
+- **`⚙ WINDOWS SYSTEM SETTINGS` (`Settings`)** — 19 inbuilt Windows `ms-settings:` shortcuts (Display, Sound, Bluetooth, Wi-Fi, Network, Windows Update, Apps, Storage, Personalization, etc.) and custom Control Panel applets.
+- **`❖ APPLICATIONS` (`Apps`)** — Indexed Start Menu applications with per-app visibility toggles.
+- **`📄 CUSTOM FILES` (`Files`)** — Direct file/folder paths (`C:\...`, `~/...`, `%APPDATA%\...`) and files indexed from custom scan directories.
+- **`🌐 WEB SEARCH` (`Web`)** — Direct domains/URLs, prefix-free bang chips (`yt `, `gh `, `rs `, `ddg `), and fallback search using your chosen **Default Search Engine**.
 
 ---
 
-## ⚡ Quick Query Examples
+### 2. 7-Tier Smart Suggestion & Ranking Engine
+Every query is evaluated across 7 relevance signals so the best match always lands at the top:
+1. **Exact Match** (`2400` pts)
+2. **Exact Prefix Match** (`1850` pts)
+3. **Word-Boundary Prefix Match** (`1520` pts — e.g., `update` immediately matches `Windows Update`)
+4. **Acronym / Initialism Match** (`1360–1440` pts — e.g., `vsc` → *Visual Studio Code*, `tm` → *Task Manager*, `dm` → *Device Manager*, `cps` → *Command Palette Settings*)
+5. **Multi-Token Out-of-Order Match** (`1220+` pts — e.g., `display setting`, `audio app`)
+6. **Contiguous Substring Match** (`960` pts)
+7. **Quality-Thresholded SkimV2 Fuzzy Match** (eliminates noisy single-letter false positives)
 
-| What You Type | What Appears at the Top | Action on `Enter` |
-| :--- | :--- | :--- |
-| **`145 * 32`** or **`(2 + 3) ^ 4`** | `145 * 32 = 4640 (Enter to Copy)` | Copies `4640` to clipboard |
-| **`sqrt(144) + 0xff`** | `sqrt(144) + 0xff = 267 (Enter to Copy)` | Copies `267` to clipboard |
-| **`255 to hex`** / **`42 to bin`** | `255 = 0xFF` / `42 = 0b101010` | Copies `0xFF` / `0b101010` to clipboard |
-| **`0xff`** | `0xff = 255 • Hex: 0xFF • Bin: 0b11111111` | Copies `255` to clipboard |
-| **`%APPDATA%`** or **`~\Downloads`** | `Open Folder: C:\Users\...\AppData\Roaming` | Opens the folder in File Explorer |
-| **`C:\Windows\System32\drivers\etc\hosts`** | `Open File: C:\Windows\...\hosts` | Opens the file directly |
-| **`localhost:3000`** or **`crates.io`** | `Open URL: http://localhost:3000` | Opens URL in default browser |
-| **`startup`** | `Run on Windows Startup: OFF (Press Enter to Enable)` | Toggles Windows Startup registry key |
-| **`hotkey`** | `Set Global Hotkey: Alt+Space` *(and presets)* | Rebinds global shortcut live |
+High-confidence matches automatically bubble their category to the top, while using your configured `category_order` as a tie-breaker.
 
 ---
 
-## ⌨️ Keyboard & Mouse Controls
-
-| Input / Shortcut | Action |
-| :--- | :--- |
-| **`Ctrl + Space`** *(or custom `hotkey`)* | Toggle Command Palette from anywhere in Windows |
-| **`↑` / `↓`** or **`Tab` / `Shift + Tab`** | Navigate suggestions (with wrap-around & auto-scroll) |
-| **`PageUp` / `PageDown`** | Jump 5 suggestions up or down |
-| **`Enter`** or **Left-Click** | Open / Execute selected suggestion (or copy calculator result) |
-| **`Ctrl + Enter`** or **Right-Click → Admin** | Run selected application or command as **Administrator** |
-| **`<bang>` + `Space`** *(e.g. `yt `)* | Convert bang key into a **Bang Pill Chip** inside the search bar |
-| **`Backspace`** *(when query is empty)* | Remove the active Bang Pill Chip |
-| **`Ctrl + ,`** or **Click `⚙`** | Open the Command Palette Settings GUI |
-| **`Esc`** | Close context menu → Clear search query / bang chip → Hide palette |
-| **Mouse Hover / Mouse Wheel** | Highlight suggestion under cursor / Scroll suggestion list |
-| **Click Outside Palette** | Automatically hide the Command Palette |
+### 3. Pluggable Extension System & Built-in `note` Notepad Editor
+- **Quick Notepad (`note` Bang)**:
+  - Summon the palette (`Ctrl+Space`) and type **`note `** (`note` + `Space`) to activate the **`📝 NOTE`** pill chip.
+  - **Write & Save on `Enter`**: Type any text (e.g., `note Finish Rust PR and buy coffee`) and hit **`Enter`**. The text is appended to your configured `.txt` or `.md` file (`notes.md` by default), the input clears, and the palette refreshes in-place so you immediately see your new line!
+  - **Timestamped Notes**: Choose **`🕒 Save Timestamped`** to prepend `[YYYY-MM-DD HH:MM:SS]`.
+  - **Live File Viewer in the Palette**: All lines written in your `.txt` or `.md` file are displayed directly inside the palette. Press **`Enter`** on any line to copy it to the clipboard, type `note open` to open the file in your default editor, or `note clear` to clear the file.
+- **1-Click Open Buttons in Settings (`Tab 6: Extensions`)**:
+  - **`📂 Open Note File`** button: Opens your selected `.txt` or `.md` note file directly from Settings (creating it automatically if it doesn't exist yet).
+  - **`📖 Open Extensions Guide`** button: Opens the bundled **`EXTENSIONS_GUIDE.md`** in one click. Even if `EXTENSIONS_GUIDE.md` is deleted from disk, `cmdpal-rs` automatically regenerates it from its embedded copy so the guide can never get lost.
+- **Add / Remove / Create Extensions**:
+  - Enable, disable (`ON`/`OFF`), or remove any extension (including the built-in `note` extension) in **Settings → Tab 6**, or create new `NotepadFile`, `QuickAppendFile`, `ShellCommand`, and `WebTemplate` extensions via the GUI, `config.toml`, or standalone `.toml` files in `./extensions/*.toml`.
 
 ---
 
-## ⚙️ Settings GUI Overview
-
-Open Settings via the **`⚙`** icon in the palette, by pressing **`Ctrl + ,`**, by typing `palette settings`, or by right-clicking the **System Tray icon → `Settings...`**:
-
-1. **Theme & Order**: Switch between the default **PowerToys Command Palette** theme and your **Custom Theme** (`#RRGGBB` hex editor), and reorder categories (`Cmds`, `Settings`, `Apps`, `Files`, `Web`).
-2. **Installed Apps**: View all indexed Start Menu applications with a live search filter, **☑ Show All / ☐ Hide All** buttons, and individual checkboxes to show or hide specific apps from suggestions.
-3. **Custom Commands**: Simplified 2-field form (*Name* + *Command or EXE Path*) and default `cmd.exe` path configuration.
-4. **Custom Settings**: Simplified 2-field form (*Name* + *`ms-settings:` URI, `.cpl`, or `.msc` Path*).
-5. **Custom File Scan**: Add specific folder paths to index their files and open them directly under the `CUSTOM FILES` category.
-6. **Web Search Bangs**: Add or remove prefix-free web search shortcuts using `{q}` URL templates.
+### 4. Enable / Disable Inbuilt Shortcuts & Choose Default Search Engine
+- **Inbuilt Shortcut Toggles**:
+  - **Settings → Tab 3 (`3. System Cmds`)**: Master switch + individual `ON`/`OFF` toggles for all 18 inbuilt System Commands.
+  - **Settings → Tab 4 (`4. Win Settings`)**: Master switch + individual `ON`/`OFF` toggles for all 19 inbuilt Windows `ms-settings:` shortcuts.
+  - **Settings → Tab 1 (`1. General & Theme`)**: Toggle for showing/hiding CmdPal's own settings shortcuts in search.
+- **Configurable Default Search Engine**:
+  - **Settings → Tab 7 (`7. Web & Search`)**: Switch your default fallback search engine with 1 click between **Google**, **DuckDuckGo**, **Bing**, **Brave Search**, **Startpage**, **Perplexity**, **YouTube**, or any **Custom Search URL Template (`{q}`)**.
 
 ---
 
-## 🌐 Default Web Search Bangs
+## 📁 Project Structure
 
-Type any bang key followed by `Space` to activate its search chip:
-
-| Bang Key | Service | URL Template |
-| :--- | :--- | :--- |
-| **`g`** | Google | `https://www.google.com/search?q={q}` |
-| **`yt`** | YouTube | `https://www.youtube.com/results?search_query={q}` |
-| **`gh`** | GitHub | `https://github.com/search?q={q}` |
-| **`ddg`** | DuckDuckGo | `https://duckduckgo.com/?q={q}` |
-| **`rs`** | Docs.rs | `https://docs.rs/releases/search?query={q}` |
-| **`crates`** | Crates.io | `https://crates.io/search?q={q}` |
-| **`so`** | Stack Overflow | `https://stackoverflow.com/search?q={q}` |
-| **`wiki`** | Wikipedia | `https://en.wikipedia.org/w/index.php?search={q}` |
-| **`r`** | Reddit | `https://www.reddit.com/search/?q={q}` |
-| **`maps`** | Google Maps | `https://www.google.com/maps/search/{q}` |
-
----
-
-## 🗂️ Project Structure
-
-```text
+~~~text
 cmdpal-rs/
 ├── .github/
 │   └── workflows/
-│       └── build.yml     # CI release build workflow (x86_64-pc-windows-msvc)
-├── Cargo.toml            # Crate dependencies & size-optimized release profile
-├── build.rs              # Compiles Slint UI & embeds procedural .ico into .exe
-├── config.toml           # Persistent TOML configuration file
+│       └── build.yml          # GitHub Actions CI/CD workflow for Windows x64 release
+├── .gitignore
+├── Cargo.toml                 # Rust package & dependency configuration
+├── build.rs                   # Slint UI compiler & procedural Windows .ico generator
+├── config.toml                # Default runtime configuration, bangs & extensions
+├── EXTENSIONS_GUIDE.md        # Step-by-step Extensions & Notepad guide (also embedded in exe)
+├── README.md                  # Project documentation
 ├── ui/
-│   └── palette.slint     # PaletteWindow & SettingsWindow Slint UI definitions
+│   └── palette.slint          # Slint UI for PaletteWindow & 7-tab SettingsWindow
 └── src/
-    ├── main.rs           # Application state, event loop, callbacks & theme sync
-    ├── icon.rs           # Procedural RGBA/BGRA app & tray icon generator
-    ├── system.rs         # Win32 tray icon, live hotkey rebinding, startup registry & focus monitor
-    ├── models.rs         # Core data structures, categories & execution targets
-    ├── config.rs         # TOML serialization/deserialization, exe-relative path resolution & normalization
-    ├── indexer.rs        # Start Menu app indexer & targeted custom folder file scanner
-    ├── engine.rs         # SkimV2 fuzzy search, inline calculator, direct URL/path detector & bang evaluator
-    └── executor.rs       # Native Win32 ShellExecuteW launcher, clipboard copy, UAC elevation & process runner
-```
+    ├── main.rs                # Application entry point, UI state sync & event loop
+    ├── models.rs              # Core data structures, ShelfCategory & ExecutionOutcome
+    ├── config.rs              # TOML config loader, normalizer & persistence helpers
+    ├── extensions.rs          # Pluggable Extension Engine, Notepad ('note') & Guide manager
+    ├── indexer.rs             # Start Menu (.lnk) & custom directory file scanner
+    ├── engine.rs              # 7-tier smart ranking engine, calculator & bang parser
+    ├── executor.rs            # Process/URI/Admin launcher & clipboard integration
+    ├── icon.rs                # Procedural RGBA app & system tray icon renderer
+    └── system.rs              # Win32 single-instance mutex, tray icon & global hotkey host
+~~~
+
+---
+
+## ⌨️ Keyboard Shortcuts & Quick Usage
+
+| Shortcut / Input | Action |
+| :--- | :--- |
+| **`Ctrl + Space`** *(configurable)* | Summon / Hide Command Palette |
+| **`↑` / `↓`** | Navigate suggestions |
+| **`Enter`** | Execute selected item / Save note in `note` mode |
+| **`Ctrl + Shift + Enter`** | Run selected command, app, or file as **Administrator (UAC)** |
+| **`Ctrl + ,`** | Open **Command Palette Settings** window |
+| **`Backspace`** *(on empty input)* | Clear active Bang Pill Chip (e.g. exit `📝 NOTE` or `🌐 YT` mode) |
+| **`Escape`** | Clear active Bang Pill Chip or hide Command Palette |
+| **`note <text>` + `Enter`** | Append `<text>` to your `.txt`/`.md` note file & preview inline |
+| **`note open` + `Enter`** | Open your `.txt`/`.md` note file in your default external editor |
+| **`24 * 7` or `255 in hex`** | Evaluate math / base conversion and copy result on `Enter` |
+| **`yt rust slint`** | Activate YouTube bang chip and search YouTube |
 
 ---
 
 ## 🛠️ Building from Source
 
 ### Prerequisites
-* **Windows 10 / 11** (`x86_64-pc-windows-msvc`)
-* [**Rust Toolchain**](https://rustup.rs/) (stable)
+- **Windows 10 / 11 (x64)**
+- **Rust Stable Toolchain** (`rustup` + MSVC build tools)
 
 ### Build & Run
-```powershell
+~~~bash
+# Clone the repository
+git clone https://github.com/nayaksudhanshu120999/r.git
+cd r
+
 # Run in development mode
 cargo run
 
 # Build size-optimized release binary
 cargo build --release
-```
-The compiled binary will be located at `target\release\cmdpal-rs.exe`.
+~~~
+
+The compiled standalone executable will be generated at:
+`target/release/cmdpal-rs.exe`
+
+On first launch, `cmdpal-rs.exe` automatically ensures `config.toml` and `EXTENSIONS_GUIDE.md` exist right next to the executable and registers the system tray icon and global hotkey.
