@@ -2,16 +2,9 @@ show_apps = true
 run_on_startup = false
 hotkey = "Ctrl+Space"
 theme = "powertoys"
-enable_cmdpal_shortcuts = true
-enable_builtin_cmds = true
-enable_builtin_settings = true
-disabled_builtin_cmds = []
-disabled_builtin_settings = []
-default_search_engine = "google"
-custom_search_url = "https://www.google.com/search?q={q}"
 custom_cmd_path = "cmd.exe"
 custom_system_settings_path = "ms-settings:"
-category_order = ["Notes", "CmdPal", "Cmds", "Settings", "Apps", "Files", "Web"]
+category_order = ["Cmds", "Settings", "Apps", "Files", "Web"]
 hidden_apps = []
 custom_file_scan_paths = []
 custom_commands = []
@@ -38,13 +31,3 @@ wiki = "https://en.wikipedia.org/w/index.php?search={q}"
 so = "https://stackoverflow.com/search?q={q}"
 r = "https://www.reddit.com/search/?q={q}"
 maps = "https://www.google.com/maps/search/{q}"
-
-[[notes]]
-bang = "note"
-name = "Quick Notes"
-file_path = "notes.md"
-
-[[notes]]
-bang = "todo"
-name = "To-Do List"
-file_path = "todo.txt"
